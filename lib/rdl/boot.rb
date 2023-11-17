@@ -167,6 +167,8 @@ require	'rdl/types/vararg.rb'
 require 'rdl/types/wild_query.rb'
 require	'rdl/types/string.rb'
 
+require 'rdl/effects/effect.rb'
+
 require 'rdl/contracts/contract.rb'
 require 'rdl/contracts/and.rb'
 require 'rdl/contracts/flat.rb'

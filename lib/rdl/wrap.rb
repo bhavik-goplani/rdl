@@ -216,6 +216,15 @@ RUBY
     end
   end
 
+  def self.effect_to_effect(eff)
+    case eff
+    when RDL::Effect::Effect
+      return eff
+    when String
+      return RDL::Globals.parser.scan_str "#T #{eff}"
+    end
+  end
+
   def self.val_to_type(val)
     case val
     when TrueClass, FalseClass, NilClass
@@ -402,7 +411,7 @@ module RDL::Annotate
   # type(klass, meth, type)
   # type(meth, type)
   # type(type)
-  def type(*args, wrap: RDL::Config.instance.type_defaults[:wrap], typecheck: RDL::Config.instance.type_defaults[:typecheck], version: nil, effect: nil, read: [], write: [])
+  def type(*args, wrap: RDL::Config.instance.type_defaults[:wrap], typecheck: RDL::Config.instance.type_defaults[:typecheck], version: nil, effect: nil)
     return if version && !(Gem::Requirement.new(version).satisfied_by? Gem.ruby_version)
     klass, meth, type = begin
                           RDL::Wrap.process_type_args(self, *args)
@@ -428,9 +437,11 @@ module RDL::Annotate
 #          warn "#{RDL::Util.pp_klass_method(klass, meth)}: methods that end in ? should have return type %bool"
 #        end
       RDL::Globals.info.add(klass, meth, :type, type)
+
+      effect = RDL::Wrap.effect_to_effect(effect) unless effect.nil?
+      puts effect.inspect unless effect.nil?
+
       RDL::Globals.info.add(klass, meth, :effect, effect)
-      read.each { |r| RDL::Globals.info.add(klass, meth, :read, r) }
-      write.each { |w| RDL::Globals.info.add(klass, meth, :write, w) }
       unless RDL::Globals.info.set(klass, meth, :typecheck, typecheck)
         raise RuntimeError, "Inconsistent typecheck flag on #{RDL::Util.pp_klass_method(klass, meth)}"
       end
