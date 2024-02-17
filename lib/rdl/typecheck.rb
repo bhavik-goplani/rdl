@@ -361,11 +361,13 @@ module RDL::Typecheck
     RDL::Logging.log :inference, :debug, "Done with constraint generation."
   end
 
-  def self.typecheck(klass, meth, ast=nil, types = nil)
+  def self.typecheck(klass, meth, ast=nil, types = nil, effects = nil)
     # puts "Typechecking #{klass}##{meth}"
     ast = get_ast(klass, meth) unless ast
     raise RuntimeError, "Can't find source for class #{RDL::Util.pp_klass_method(klass, meth)}" if ast.nil?
     types = RDL::Globals.info.get(klass, meth, :type) unless types
+    effects = RDL::Globals.info.get(klass, meth, :effect) unless effects
+    effects = Array.new(types.size) { |i| RDL::Effect::Effect.pure } if effects.nil?
 
     raise RuntimeError, "Can't typecheck method with no types?!" if types.nil? or types == []
 
@@ -378,7 +380,7 @@ module RDL::Typecheck
     end
     error :internal, "Method #{name} defined where method #{meth} expected", ast if name.to_sym != meth
     context_types = RDL::Globals.info.get(klass, meth, :context_types)
-    types.each { |type|
+    types.zip(effects).each { |type, effect|
       if RDL::Util.has_singleton_marker(klass)
         # to_class gets the class object itself, so remove singleton marker to get class rather than singleton class
         self_type = RDL::Type::SingletonType.new(RDL::Util.to_class(RDL::Util.remove_singleton_marker(klass)))
@@ -407,6 +409,7 @@ module RDL::Typecheck
         _, body_type, body_effect = tc(scope, Env.new(targs_dup), body)
       end
       error :bad_return_type, [body_type.to_s, type.ret.to_s], body unless body.nil? || meth == :initialize ||RDL::Type::Type.leq(body_type, type.ret, ast: ast)
+      error :bad_return_effect, [body_effect.to_s, effect.to_s], body unless RDL::Type::Type.leq(body_effect, effect, ast: ast)
     }
 
     if RDL::Config.instance.check_comp_types
@@ -582,7 +585,7 @@ module RDL::Typecheck
 
     RDL::Logging.log :typecheck, :debug_error, "#{exn}; returning %dyn"
 
-    [env, RDL::Globals.types[:dyn]]
+    [env, RDL::Globals.types[:dyn], RDL::Effect::Effect.impure]
   end
 
   # The actual type checking logic.
@@ -1010,8 +1013,8 @@ module RDL::Typecheck
           map_block_type = RDL::Type::MethodType.new([trecv.params[0]], nil, ti_map_case.canonical.ret)
           block = [map_block_type, e_map_case]
         end
-        envres, tres = tc_send(sscope, envi, trecv, e.children[1], tactuals, block, e)
-        [envres, tres.canonical]
+        envres, tres, effres = tc_send(sscope, envi, trecv, e.children[1], tactuals, block, e)
+        [envres, tres.canonical, effres]
       }
     when :yield
       # very similar to send except the callee is the method's block
@@ -1429,7 +1432,7 @@ RUBY
     case kind
     when :lvar  # local variable
       error :undefined_local_or_method, [name], e unless env.has_key? name
-      [env, env[name].canonical]
+      [env, env[name].canonical, RDL::Effect::Effect.pure]
     when :ivar, :cvar, :gvar
       klass = (if kind == :gvar then RDL::Util::GLOBAL_NAME else env[:self].to_s end)
       klass = "Integer" if klass == "Number"
@@ -1681,7 +1684,7 @@ RUBY
     elsif trecv.is_a?(RDL::Type::AnnotatedArgType) || trecv.is_a?(RDL::Type::DependentArgType)
       trecv = trecv.type
     end
-    return [env, tc_send_class(trecv, e)] if (meth == :class) && (tactuals.empty?)
+    return [env, tc_send_class(trecv, e), RDL::Effect::Effect.pure] if (meth == :class) && (tactuals.empty?)
     ts = [] # Array<MethodType>, i.e., an intersection types
     case trecv
     when RDL::Type::SingletonType
@@ -1867,7 +1870,7 @@ RUBY
       #tmeth_inter = [meth_type]
 
       #self_klass = nil
-    #error :recv_var_type, [trecv], e
+      #error :recv_var_type, [trecv], e
       return [env, [ret_type]]
     when RDL::Type::MethodType
       if meth == :call

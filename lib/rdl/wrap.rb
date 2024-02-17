@@ -221,7 +221,7 @@ RUBY
     when RDL::Effect::Effect
       return eff
     when String
-      return RDL::Globals.parser.scan_str "#T #{eff}"
+      return RDL::Effect::Effect.new(RDL::Globals.parser.scan_str "#T #{eff}")
     end
   end
 
@@ -432,16 +432,19 @@ module RDL::Annotate
     end
     RDL::Globals.dep_types << [klass, meth, type] if typs.any? { |t| t.is_a?(RDL::Type::ComputedType) || (t.is_a?(RDL::Type::BoundArgType) && t.type.is_a?(RDL::Type::ComputedType)) }
     if meth
-# It turns out Ruby core/stdlib don't always follow this convention...
-#        if (meth.to_s[-1] == "?") && (type.ret != RDL::Globals.types[:bool])
-#          warn "#{RDL::Util.pp_klass_method(klass, meth)}: methods that end in ? should have return type %bool"
-#        end
+      # It turns out Ruby core/stdlib don't always follow this convention...
+      # if (meth.to_s[-1] == "?") && (type.ret != RDL::Globals.types[:bool])
+      #   warn "#{RDL::Util.pp_klass_method(klass, meth)}: methods that end in ? should have return type %bool"
+      # end
       RDL::Globals.info.add(klass, meth, :type, type)
 
-      effect = RDL::Wrap.effect_to_effect(effect) unless effect.nil?
-      puts effect.inspect unless effect.nil?
-
+      if effect.nil?
+        effect = RDL::Effect::Effect.pure
+      else
+        effect = RDL::Wrap.effect_to_effect(effect)
+      end
       RDL::Globals.info.add(klass, meth, :effect, effect)
+
       unless RDL::Globals.info.set(klass, meth, :typecheck, typecheck)
         raise RuntimeError, "Inconsistent typecheck flag on #{RDL::Util.pp_klass_method(klass, meth)}"
       end

@@ -92,7 +92,12 @@ module RDL::Type
       right = right.type if right.is_a?(DependentArgType) || right.is_a?(AnnotatedArgType)
       left = left.type if left.is_a? NonNullType # ignore nullness!
       right = right.type if right.is_a? NonNullType
-      left = left.canonical
+      begin
+        left = left.canonical
+      rescue Exception => e
+        puts ast
+        raise e
+      end
       right = right.canonical
       #puts "About to try #{left} <= #{right} with #{inst} and #{ileft}"
       return true if left.equal?(right)
