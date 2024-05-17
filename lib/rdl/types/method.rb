@@ -7,6 +7,7 @@ module RDL::Type
     attr_reader :args
     attr_reader :block
     attr_reader :ret
+    attr_reader :eff
 
     @@contract_cache = {}
 
@@ -15,8 +16,9 @@ module RDL::Type
     # [+args+] List of types of the arguments of the procedure (use [] for no args).
     # [+block+] The type of the block passed to this method, if it takes one.
     # [+ret+] The type that the procedure returns.
+    # [+eff+] Side effect for evaluating the method
     # [+sol+] Whether or not this is being used as a type inference solution
-    def initialize(args, block, ret, sol=false)
+    def initialize(args, block, ret, eff = BotType.new, sol: false)
       # First check argument types have form (any number of required
       # or optional args, at most one vararg, any number of named arguments)
       state = :required
@@ -54,6 +56,9 @@ module RDL::Type
       raise "Attempt to create method type with non-type ret #{ret} of class #{ret.class}" unless ret.is_a? Type
       @ret = ret
 
+      raise "Attempt to create method type with non-type effect #{eff} of class #{ret.class}" unless eff.is_a? Type
+      @eff = eff
+
       super()
     end
 
@@ -64,7 +69,7 @@ module RDL::Type
       block_sol = @block.solution
       ret_sol   = @ret.solution
 
-      self.class.new arg_sols, block_sol, ret_sol, true
+      self.class.new arg_sols, block_sol, ret_sol, sol: true
     end
 
     # TODO: Check blk
@@ -287,13 +292,13 @@ RUBY
 
     def to_s  # :nodoc:
       if @block && @block.is_a?(OptionalType)
-        return "(#{@args.map { |arg| arg.to_s }.join(', ')}) #{@block.to_s} -> #{@ret.to_s}"
+        return "(#{@args.map { |arg| arg.to_s }.join(', ')}) #{@block.to_s} -> #{@ret.to_s}#{eff_to_s}"
       elsif @block
-        return "(#{@args.map { |arg| arg.to_s }.join(', ')}) {#{@block.to_s}} -> #{@ret.to_s}"
+        return "(#{@args.map { |arg| arg.to_s }.join(', ')}) {#{@block.to_s}} -> #{@ret.to_s}#{eff_to_s}"
       elsif @args
-        return "(#{@args.map { |arg| arg.to_s }.join(', ')}) -> #{@ret.to_s}"
+        return "(#{@args.map { |arg| arg.to_s }.join(', ')}) -> #{@ret.to_s}#{eff_to_s}"
       else
-        return "() -> #{@ret.to_s}"
+        return "() -> #{@ret.to_s}#{eff_to_s}"
       end
     end
 
@@ -335,7 +340,8 @@ RUBY
       return (other.instance_of? MethodType) &&
         (other.args == @args) &&
         (other.block == @block) &&
-        (other.ret == @ret)
+        (other.ret == @ret) &&
+        (other.eff == @eff)
     end
 
     alias eql? ==
@@ -425,6 +431,12 @@ RUBY
 	      tmp = RDL::Type::MethodType.check_block_ret_types(slf, types, inst, tmp, bind, *v)
         tmp
       }
+    end
+
+    private
+    def eff_to_s
+      return "" unless @eff
+      " [#{eff}]"
     end
 
   end

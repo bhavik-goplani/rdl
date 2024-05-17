@@ -37,7 +37,10 @@ rule
         result = RDL::Type::MethodType.new val[1], val[3], RDL::Type::DependentArgType.new(val[6], val[5], val[7])
       }
    | LPAREN arg_list RPAREN block RARROW COMP {
-     	result = RDL::Type::MethodType.new(val[1], val[3], RDL::Type::ComputedType.new(val[5]))
+        result = RDL::Type::MethodType.new(val[1], val[3], RDL::Type::ComputedType.new(val[5]))
+      }
+   | LPAREN arg_list RPAREN block RARROW type_expr LBRACKET effect RBRACKET {
+        result = RDL::Type::MethodType.new(val[1], val[3], val[5], val[7])
       }
 
   method_sig_list:
@@ -178,6 +181,26 @@ rule
 # The following can't be used in SingletonTypes because those compare using .equal?
     | STRING { result = RDL::Type::PreciseStringType.new(val[0]) }
     | DOT { result = RDL::Type::WildQuery.new }
+
+  effect:
+    DOT { result = RDL::Globals.types[:pure] }
+  | STAR { result = RDL::Globals.types[:impure] }
+  | ID {
+      if val[0] == 'nil' then
+        result = RDL::Globals.types[:nil]
+      elsif val[0] == 'true' then
+        result = RDL::Globals.types[:true]
+      elsif val[0] == 'false'
+        result = RDL::Globals.types[:false]
+      elsif val[0] =~ /^[a-z_]+\w*\'?/ then
+        result = RDL::Type::VarType.new(val[0].to_sym)
+      else
+        result = RDL::Type::NominalType.new val[0]
+      end
+    }
+    | single_type LESS type_expr_comma_list GREATER {
+      result = RDL::Type::GenericType.new(val[0], *val[2])
+    }
 
 ---- header ----
 

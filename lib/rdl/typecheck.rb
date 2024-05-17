@@ -404,9 +404,12 @@ module RDL::Typecheck
       else
         targs_dup = Hash[targs.map { |k, t| [k, t.copy] }] ## args can be mutated in method body. duplicate to avoid this. TODO: check on this
         @num_casts = 0
-        _, body_type = tc(scope, Env.new(targs_dup), body)
+        _, body_type, body_eff = tc(scope, Env.new(targs_dup), body)
       end
+      puts body_eff.inspect
+      puts ast
       error :bad_return_type, [body_type.to_s, type.ret.to_s], body unless body.nil? || meth == :initialize ||RDL::Type::Type.leq(body_type, type.ret, ast: ast)
+      error :bad_return_effect, [body_type.to_s, type.ret.to_s], body unless body.nil? || body_eff.nil? || meth == :initialize ||RDL::Type::Type.leq(body_eff, type.eff, ast: ast)
     }
 
     if RDL::Config.instance.check_comp_types
@@ -753,8 +756,9 @@ module RDL::Typecheck
       x = e.children[0]
       # if local var, lhs is bound to nil before assignment is executed! only matters in type checking for locals
       env = env.bind(x, RDL::Globals.types[:nil]) if ((e.type == :lvasgn) && (not (env.has_key? x)))
-      envright, tright = tc(scope, env, e.children[1])
-      tc_vasgn(scope, envright, e.type, x, tright, e)
+      envright, tright, teff = tc(scope, env, e.children[1])
+      ret = tc_vasgn(scope, envright, e.type, x, tright, e)
+      ret + [teff]
     when :masgn
       # (masgn (mlhs (Xvasgn var-name) ... (Xvasgn var-name)) rhs)
       e.children[0].children.each { |asgn|
@@ -1010,8 +1014,8 @@ module RDL::Typecheck
           map_block_type = RDL::Type::MethodType.new([trecv.params[0]], nil, ti_map_case.canonical.ret)
           block = [map_block_type, e_map_case]
         end
-        envres, tres = tc_send(sscope, envi, trecv, e.children[1], tactuals, block, e)
-        [envres, tres.canonical]
+        envres, tres, teff = tc_send(sscope, envi, trecv, e.children[1], tactuals, block, e)
+        [envres, tres.canonical, teff.canonical]
       }
     when :yield
       # very similar to send except the callee is the method's block
@@ -1276,8 +1280,15 @@ RUBY
     when :begin, :kwbegin # sequencing
       envi = env
       ti = nil
-      e.children.each { |ei| envi, ti = tc(scope, envi, ei) }
-      [envi, ti]
+      effi = [RDL::Globals.types[:pure]]
+      e.children.each { |ei|
+        envi, ti, eff = tc(scope, envi, ei)
+        puts "Node: #{ei.type}"
+        puts "Type: #{ti}"
+        puts "Effect: #{eff}"
+        effi << eff
+      }
+      [envi, ti, RDL::Type::UnionType.new(*effi).canonical]
     when :ensure
       # (ensure main-body ensure-body)
       # TODO exception control flow from main-body, vars initialized to nil
@@ -1483,14 +1494,16 @@ RUBY
       [env, tright.canonical]
     when :send
       meth = e.children[1] # note method name include =!
-      envi, trecv = tc(scope, env, e.children[0]) # receiver
+      envi, trecv, eff = tc(scope, env, e.children[0]) # receiver
+      effs = [eff]
       typs = []
       if e.children.length > 2
         # special case of []= when there's a second arg (the index)
         # this code is a little more general than it has to be unless other similar operators added
         e.children[2..-1].each { |arg|
-          envi, targ = tc(scope, envi, arg)
+          envi, targ, effarg = tc(scope, envi, arg)
           typs << targ
+          effs << effarg
         }
       end
       # name is not useful here
@@ -1622,6 +1635,7 @@ RUBY
     trecvs = if trecvs.is_a? RDL::Type::UnionType then union = true; trecvs.types else union = false; [trecvs] end
 
     trets = []
+    teffs = []
     trecvs.each { |trecv|
       if trecv.is_a?(RDL::Type::ChoiceType)
         choice_hash = { }
@@ -1632,7 +1646,7 @@ RUBY
             t = t.canonical
             tarms = t.is_a?(RDL::Type::UnionType) ? t.types : [t]
             tarms.each { |t|
-              env, ts = tc_send_one_recv(scope, env, t, meth, tactuals, block, e, op_asgn, union)
+              env, ts, effs = tc_send_one_recv(scope, env, t, meth, tactuals, block, e, op_asgn, union)
               choice_hash[num] = RDL::Type::UnionType.new(*ts).canonical
             }
           rescue StaticTypeError => err
@@ -1650,15 +1664,16 @@ RUBY
           ts = [RDL::Type::ChoiceType.new(choice_hash, [trecv] + trecv.connecteds)]
         end
       else
-        env, ts = tc_send_one_recv(scope, env, trecv, meth, tactuals, block, e, op_asgn, union) ### XXX fix
+        env, ts, effs = tc_send_one_recv(scope, env, trecv, meth, tactuals, block, e, op_asgn, union) ### XXX fix
       end
 
       # TODO: envs is all possible different orders
 
       trets.concat(ts)
+      teffs.concat(effs)
     }
     trets.map! {|t| (t.is_a?(RDL::Type::AnnotatedArgType) || t.is_a?(RDL::Type::BoundArgType)) ? t.type : t}
-    return [env, RDL::Type::UnionType.new(*trets)]
+    return [env, RDL::Type::UnionType.new(*trets), RDL::Type::UnionType.new(*teffs)]
   end
 
   # Like tc_send but trecv should never be a union type
@@ -1681,7 +1696,7 @@ RUBY
     elsif trecv.is_a?(RDL::Type::AnnotatedArgType) || trecv.is_a?(RDL::Type::DependentArgType)
       trecv = trecv.type
     end
-    return [env, tc_send_class(trecv, e)] if (meth == :class) && (tactuals.empty?)
+    return [env, tc_send_class(trecv, e), [RDL::Globals.types[:pure]]] if (meth == :class) && (tactuals.empty?)
     ts = [] # Array<MethodType>, i.e., an intersection types
     case trecv
     when RDL::Type::SingletonType
@@ -1719,7 +1734,7 @@ RUBY
         ts = lookup(scope, klass.to_s, trecv.val, e)
         ts = filter_comp_types(ts, false) ## no comp types in this case
         error :no_type_for_symbol, [trecv.val.inspect], e if ts.nil?
-        return [env, ts]
+        return [env, ts, [RDL::Globals.types[:pure]]]
       else
         klass = trecv.val.class.to_s
         ts = lookup(scope, klass, meth, e)
@@ -1739,6 +1754,9 @@ RUBY
       ts = ts.map { |t| t.instantiate(inst) }
     when RDL::Type::NominalType
       ts = lookup(scope, trecv.name, meth, e)
+      puts "Meth name: #{meth}"
+      puts ts
+      puts "==="
       unless ts
         klass = RDL::Util.to_class(scope[:klass])
         if klass.class == Module
@@ -1746,10 +1764,10 @@ RUBY
           # Here a module method is calling a non-existent method; check for it in all mixees
           # TODO: Handle :extend
           nts = RDL::Globals.module_mixees[klass].map { |k, kind| if kind == :include then RDL::Type::NominalType.new(k) end }
-          return [env, [RDL::Globals.types[:bot]]] if nts.empty? # if module not mixed in, this call can't happen; so %bot
+          return [env, [RDL::Globals.types[:bot]], RDL::Globals.types[:pure]] if nts.empty? # if module not mixed in, this call can't happen; so %bot
           ut = RDL::Type::UnionType.new(*nts)
-          env, t = tc_send(scope, env, ut, meth, tactuals, block, e, op_asgn)
-          return [env, [t]]
+          env, t, eff = tc_send(scope, env, ut, meth, tactuals, block, e, op_asgn)
+          return [env, [t], [eff]]
         end
         error :no_instance_method_type, [trecv.name, meth], e
       end
@@ -1868,7 +1886,7 @@ RUBY
 
       #self_klass = nil
     #error :recv_var_type, [trecv], e
-      return [env, [ret_type]]
+      return [env, [ret_type], [RDL::Globals.types[:pure]]]
     when RDL::Type::MethodType
       if meth == :call
         # Special case - invokes the Proc
@@ -1878,12 +1896,13 @@ RUBY
         return tc_send_one_recv(scope, env, RDL::Globals.types[:proc], meth, tactuals, block, e, op_asgn, union)
       end
     when RDL::Type::DynamicType
-      return [env, [trecv]]
+      return [env, [trecv], [trecv]]
     else
       raise RuntimeError, "receiver type #{trecv} of kind #{trecv.class} not supported yet, meth=#{meth}"
     end
 
     trets = [] # all possible return types
+    teffs = [] # all possible effects
     # there might be more than one return type because multiple cases of an intersection type might match
     tmeth_names = [] ## necessary for more precise error messages with ComputedTypes
     arg_choices = Hash.new { |h, k| h[k] = {} } # Hash<VarType, Hash<Integer, Type>>. The keys are tactual arguments that are VarTypes. The values are choice hashes, to be turned into ChoiceTypes that will be upper bounds on the keys.
@@ -1901,6 +1920,7 @@ RUBY
     RDL::Type.expand_product(tactuals).each { |tactuals_expanded|
       # AT LEAST ONE of the possible intesection arms must match
       trets_tmp = []
+      teffs_tmp = []
       #deferred_constraints = []
       choice_num = 0
       ts.each_with_index { |tmeth, ind| # MethodType
@@ -1910,7 +1930,8 @@ RUBY
         choice_num += 1
         current_ret = nil
         if tmeth.is_a? RDL::Type::DynamicType
-          trets_tmp << (current_ret = RDL::Type::DynamicType.new)
+          trets_tmp << (current_ret = RDL::Globals.types[:dyn])
+          teffs_tmp << RDL::Globals.types[:dyn]
         elsif ((tmeth.block && block) || (tmeth.block.nil? && block.nil?) || tmeth.block.is_a?(RDL::Type::VarType))
           if trecv.is_a?(RDL::Type::FiniteHashType) && trecv.the_hash
             trecv = trecv.canonical
@@ -1951,9 +1972,11 @@ RUBY
               end
             #trets_tmp << init_typ unless block_mismatch
               trets_tmp << (current_ret = tmeth.ret.instantiate(tmeth_inst))
+              teffs_tmp << tmeth.eff
               got_match = true
             elsif !block_mismatch
               trets_tmp << (current_ret = (tmeth.ret.instantiate(tmeth_inst))) # found a match for this subunion; add its return type to trets_tmp
+              teffs_tmp << tmeth.eff
               got_match = true
               if comp_type && RDL::Config.instance.check_comp_types && !union
                 if (e.type == :op_asgn) && op_asgn
@@ -1995,10 +2018,12 @@ RUBY
       if trets_tmp.empty?
         # no arm of the intersection matched this expanded actuals lists, so reset trets to signal error and break loop
         trets = []
+        teffs = []
         break
       else
         #apply_deferred_constraints(deferred_constraints, e) if !deferred_constraints.empty?
         trets.concat(trets_tmp)
+        teffs.concat(teffs_tmp)
       end
     }
     ## Down here EITHER: apply all deferred constraints, continue with trets OR turn choices into ChoiceTypes, apply those deferred constraints, turn trets into [ret_choice_type]
@@ -2027,6 +2052,7 @@ RUBY
         (ct_args+[new_ret]).each { |ct| ct.add_connecteds(new_ret, *ct_args) }
       end
       trets = [new_ret]
+      teffs = [RDL::Globals.types[:impure]]
       apply_deferred_constraints(new_dcs, e) if !new_dcs.empty?
     end
 
@@ -2052,7 +2078,7 @@ RUBY
       error :arg_type_single_receiver_error, [name, meth, msg], e
     end
     # TODO: issue warning if trets.size > 1 ?
-    return [env, trets]
+    return [env, trets, teffs]
   end
 
   def self.apply_deferred_constraints(deferred_constraints, e)
@@ -2556,6 +2582,7 @@ class Diagnostic < Parser::Diagnostic
 
   RDL_MESSAGES = {
     bad_return_type: "got type `%s' where return type `%s' expected",
+    bad_return_effect: "got effect `%s' where effect `%s' expected",
     bad_inst_type: "instantiate! called on object of type `%s' where Generic Type was expected",
     inst_not_param: "instantiate! receiver is of class `%s' which is not parameterized",
     inst_num_args: "instantiate! expecting `%s' type parameters, got `%s' parameters",

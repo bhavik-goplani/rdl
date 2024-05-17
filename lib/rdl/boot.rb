@@ -248,11 +248,16 @@ module RDL
       @types[:standard_error] = RDL::Type::NominalType.new StandardError
       @types[:proc] = RDL::Type::NominalType.new Proc
 
+      @types[:pure] = @types[:bot]
+      @types[:impure] = @types[:top]
+
       # Hash from special type names to their values
       @special_types = {'%any' => @types[:top],
                         '%bot' => @types[:bot],
                         '%bool' => @types[:bool],
-                        '%dyn' => @types[:dyn]}
+                        '%dyn' => @types[:dyn],
+                        '%pure' => @types[:pure],
+                        '%impure' => @types[:impure]}
     }
   end
 end

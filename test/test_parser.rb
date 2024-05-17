@@ -227,4 +227,12 @@ class TestParser < Minitest::Test
     assert_equal (FiniteHashType.new({organization: RDL::Globals.types[:symbol]}, nil)), tt('{organization: Symbol}')
   end
 
+  def test_eff
+    t1 = tm "(nil) -> nil [.]"
+    assert_equal (MethodType.new [RDL::Globals.types[:nil]], nil, RDL::Globals.types[:nil], RDL::Type::BotType.new), t1
+
+    t2 = tm "(nil) -> nil [*]"
+    assert_equal (MethodType.new [RDL::Globals.types[:nil]], nil, RDL::Globals.types[:nil], RDL::Type::TopType.new), t2
+  end
+
 end

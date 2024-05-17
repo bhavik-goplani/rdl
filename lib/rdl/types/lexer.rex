@@ -22,7 +22,7 @@ rule
   \}            { [:RBRACE, text] }
   \[            { [:LBRACKET, text] }
   \]            { [:RBRACKET, text] }
-  <\:\:		{ [:BIND, text] }
+  <\:\:         { [:BIND, text] }
   <             { [:LESS, text] }
   >             { [:GREATER, text] }
   =             { [:EQUAL, text] }
@@ -37,7 +37,7 @@ rule
   \$\{          { [:CONST_BEGIN, text] }
   \.\.\.        { [:DOTS, text] }
   \.            { [:DOT, text] }
-  {COMP}	{ [:COMP, text[2..-3]] }
+  {COMP}        { [:COMP, text[2..-3]] }
   {FLOAT}       { [:FLOAT, text] } # Must go before FIXNUM
   {FIXNUM}      { [:FIXNUM, text] }
   {ID}          { if text == "or" then [:OR, text] else [:ID, text] end }
