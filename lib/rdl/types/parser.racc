@@ -183,6 +183,10 @@ rule
     | DOT { result = RDL::Type::WildQuery.new }
 
   effect:
+    single_effect { result = val[0] }
+  | single_effect OR effect { result = RDL::Type::UnionType.new val[0], val[2] }
+  
+  single_effect:
     DOT { result = RDL::Globals.types[:pure] }
   | STAR { result = RDL::Globals.types[:impure] }
   | ID {
