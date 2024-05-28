@@ -233,6 +233,13 @@ class TestParser < Minitest::Test
 
     t2 = tm "(nil) -> nil [*]"
     assert_equal (MethodType.new [RDL::Globals.types[:nil]], nil, RDL::Globals.types[:nil], RDL::Type::TopType.new), t2
+
+    t3 = tm "(nil) -> nil [open]"
+    assert_equal (MethodType.new [RDL::Globals.types[:nil]], nil, RDL::Globals.types[:nil], RDL::Type::VarType.new('open')), t3
+
+    t4 = tm "(nil) -> nil [open or write]"
+    assert_equal (MethodType.new [RDL::Globals.types[:nil]], nil, RDL::Globals.types[:nil], RDL::Type::UnionType.new(RDL::Type::VarType.new('open'), RDL::Type::VarType.new('write'))), t4
+
   end
 
 end
