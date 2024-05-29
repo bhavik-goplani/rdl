@@ -409,7 +409,7 @@ module RDL::Typecheck
       puts body_eff.inspect
       puts ast
       error :bad_return_type, [body_type.to_s, type.ret.to_s], body unless body.nil? || meth == :initialize ||RDL::Type::Type.leq(body_type, type.ret, ast: ast)
-      error :bad_return_effect, [body_type.to_s, type.ret.to_s], body unless body.nil? || body_eff.nil? || meth == :initialize ||RDL::Type::Type.leq(body_eff, type.eff, ast: ast)
+      error :bad_return_effect, [body_eff.to_s, type.eff.to_s], body unless body.nil? || body_eff.nil? || meth == :initialize ||RDL::Type::Type.leq(body_eff, type.eff, ast: ast)
     }
 
     if RDL::Config.instance.check_comp_types
@@ -1015,6 +1015,7 @@ module RDL::Typecheck
           block = [map_block_type, e_map_case]
         end
         envres, tres, teff = tc_send(sscope, envi, trecv, e.children[1], tactuals, block, e)
+        puts "tc_send: #{teff}"
         [envres, tres.canonical, teff.canonical]
       }
     when :yield
@@ -1689,6 +1690,9 @@ RUBY
     tactuals.each { |t| puts t }
     puts "----------------------"
 =end
+    puts 
+    puts "==="
+    puts "Meth name: #{meth}"
     if (trecv == RDL::Globals.types[:array])
       trecv = RDL::Type::GenericType.new(RDL::Globals.types[:array], RDL::Globals.types[:bot])
     elsif (trecv == RDL::Globals.types[:hash])
@@ -1717,6 +1721,7 @@ RUBY
           self_inst = trecv
         end
         ts = lookup(scope, trecv_lookup, meth_lookup, e)
+        puts ts
         ts = [RDL::Type::MethodType.new([], nil, RDL::Type::NominalType.new(trecv.val))] if init && (ts.nil?) # there's always a nullary new if initialize is undefined
         error :no_singleton_method_type, [trecv.val, meth], e unless ts
         inst = {self: self_inst}
@@ -1754,9 +1759,8 @@ RUBY
       ts = ts.map { |t| t.instantiate(inst) }
     when RDL::Type::NominalType
       ts = lookup(scope, trecv.name, meth, e)
-      puts "Meth name: #{meth}"
+      
       puts ts
-      puts "==="
       unless ts
         klass = RDL::Util.to_class(scope[:klass])
         if klass.class == Module
@@ -1976,6 +1980,7 @@ RUBY
               got_match = true
             elsif !block_mismatch
               trets_tmp << (current_ret = (tmeth.ret.instantiate(tmeth_inst))) # found a match for this subunion; add its return type to trets_tmp
+              puts "tmeth.eff: #{tmeth.eff}"
               teffs_tmp << tmeth.eff
               got_match = true
               if comp_type && RDL::Config.instance.check_comp_types && !union
@@ -2029,6 +2034,7 @@ RUBY
     ## Down here EITHER: apply all deferred constraints, continue with trets OR turn choices into ChoiceTypes, apply those deferred constraints, turn trets into [ret_choice_type]
 
     if arg_choices.empty?
+      puts "Here"
       apply_deferred_constraints(deferred_constraints, e) if !deferred_constraints.empty?
     else
       new_dcs = []
@@ -2078,6 +2084,8 @@ RUBY
       error :arg_type_single_receiver_error, [name, meth, msg], e
     end
     # TODO: issue warning if trets.size > 1 ?
+    puts "trets: #{trets}"
+    puts "teffs: #{teffs}"
     return [env, trets, teffs]
   end
 

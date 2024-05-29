@@ -12,7 +12,7 @@ class TestEffects < Minitest::Test
     x
   end
 
-  type :do_io, '() -> %any [Write]', typecheck: :effects
+  type :do_io, '() -> %any [open or write or close]', typecheck: :effects
   def do_io
     f = File.open('test')
     f.write("hello world")

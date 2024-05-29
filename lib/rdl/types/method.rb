@@ -309,7 +309,8 @@ RUBY
     def instantiate(inst)
       return MethodType.new(@args.map { |arg| arg.instantiate(inst) },
                             @block ? @block.instantiate(inst) : nil,
-                            @ret.instantiate(inst))
+                            @ret.instantiate(inst),
+                            @eff.instantiate(inst))
     end
 
     def widen
