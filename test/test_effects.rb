@@ -7,10 +7,10 @@ require 'tempfile'
 class TestEffects < Minitest::Test
   extend RDL::Annotate
 
-  # type :pure_method, '(Integer) -> Integer [.]', typecheck: :effects
-  # def pure_method(x)
-  #   x
-  # end
+  type :pure_method, '(Integer) -> Integer [.]', typecheck: :effects
+  def pure_method(x)
+    x
+  end
 
   type :do_io, '() -> %any [open or write or close]', typecheck: :effects
   def do_io
