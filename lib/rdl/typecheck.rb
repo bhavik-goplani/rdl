@@ -406,8 +406,8 @@ module RDL::Typecheck
         @num_casts = 0
         _, body_type, body_eff = tc(scope, Env.new(targs_dup), body)
       end
-      puts body_eff.inspect
-      puts ast
+      # puts body_eff.inspect
+      # puts ast
       error :bad_return_type, [body_type.to_s, type.ret.to_s], body unless body.nil? || meth == :initialize ||RDL::Type::Type.leq(body_type, type.ret, ast: ast)
       error :bad_return_effect, [body_eff.to_s, type.eff.to_s], body unless body.nil? || body_eff.nil? || meth == :initialize ||RDL::Type::Type.leq(body_eff, type.eff, ast: ast)
     }
@@ -597,11 +597,11 @@ module RDL::Typecheck
   def self._tc(scope, env, e)
     case e.type
     when :nil
-      [env, RDL::Globals.types[:nil]]
+      [env, RDL::Globals.types[:nil], [RDL::Globals.types[:pure]]]
     when :true
-      [env, RDL::Globals.types[:true]]
+      [env, RDL::Globals.types[:true], [RDL::Globals.types[:pure]]]
     when :false
-      [env, RDL::Globals.types[:false]]
+      [env, RDL::Globals.types[:false], [RDL::Globals.types[:pure]]]
     when :str, :string
       t = RDL::Config.instance.use_precise_string ? RDL::Type::PreciseStringType.new(e.children[0]) : RDL::Globals.types[:string]
       [env, t]
@@ -955,13 +955,15 @@ module RDL::Typecheck
       return tc_instantiate!(scope, env, e)  if is_RDL(e.children[0]) && e.children[1] == :instantiate!
       envi = env
       tactuals = []
+      effactuals = [RDL::Globals.types[:pure]]
       block = scope[:block]
       map_case = false
       e_map_case = ti_map_case = nil
       scope_merge(scope, block: nil, break: env, next: env) { |sscope|
         e.children[2..-1].each { |ei|
           if ei.type == :splat
-            envi, ti = tc(sscope, envi, ei.children[0])
+            envi, ti, effi = tc(sscope, envi, ei.children[0])
+            effactuals.push(*effi)
             if ti.is_a? RDL::Type::TupleType
               tactuals.concat ti.params
             elsif ti.is_a?(RDL::Type::GenericType) && ti.base == RDL::Globals.types[:array]
@@ -984,7 +986,8 @@ module RDL::Typecheck
             end
           elsif ei.type == :block_pass
             raise RuntimeError, "impossible to pass block arg and literal block" if scope[:block]
-            envi, ti = tc(sscope, envi, ei.children[0])
+            envi, ti, effi = tc(sscope, envi, ei.children[0])
+            effactuals.push(*effi)
             # convert using to_proc if necessary
             if (e.children[1] == :map) || e.children[1] == :sum || e.children[1] == :keep_if
               ## block_pass calling map is a weird case:
@@ -997,26 +1000,32 @@ module RDL::Typecheck
               e_map_case = ei
               ti_map_case = ti
             else
-              envi, ti = tc_send(sscope, envi, ti, :to_proc, [], nil, ei) unless ti.is_a? RDL::Type::MethodType
+              envi, ti, effi = tc_send(sscope, envi, ti, :to_proc, [], nil, ei) unless ti.is_a? RDL::Type::MethodType
+              effactuals.push(*effi)
               block = [ti, ei]
             end
           else
-            envi, ti = tc(sscope, envi, ei)
+            envi, ti, effi = tc(sscope, envi, ei)
             tactuals << ti
+            effactuals.push(*effi)
           end
         }
-        envi, trecv = if e.children[0].nil? then [envi, envi[:self]] else tc(sscope, envi, e.children[0]) end # if no receiver, self is receiver
+        envi, trecv, effrecv = if e.children[0].nil? then [envi, envi[:self], RDL::Globals.types[:pure]] else tc(sscope, envi, e.children[0]) end # if no receiver, self is receiver
+        effactuals.push(*effrecv)
 
         if map_case && trecv.is_a?(RDL::Type::GenericType)
           #raise "Expected GenericType, got #{trecv}." unless trecv.is_a?(RDL::Type::GenericType)
           trecv.is_a?(RDL::Type::GenericType)
-          _, ti_map_case = tc_send(sscope, Env.new({ self: trecv.params[0] }), ti_map_case, :to_proc, [], nil, e_map_case)
+          _, ti_map_case, effi_map_case = tc_send(sscope, Env.new({ self: trecv.params[0] }), ti_map_case, :to_proc, [], nil, e_map_case)
+          effactuals.push(*effi_map_case)
           map_block_type = RDL::Type::MethodType.new([trecv.params[0]], nil, ti_map_case.canonical.ret)
           block = [map_block_type, e_map_case]
         end
         envres, tres, teff = tc_send(sscope, envi, trecv, e.children[1], tactuals, block, e)
-        puts "tc_send: #{teff}"
-        [envres, tres.canonical, teff.canonical]
+        # puts "tc_send: #{teff}"
+        effactuals.push(*teff)
+        # puts "effactuals: #{effactuals}"
+        [envres, tres.canonical, RDL::Type::UnionType.new(*effactuals).canonical]
       }
     when :yield
       # very similar to send except the callee is the method's block
@@ -1072,14 +1081,18 @@ RUBY
     #     [a1, RDL::Globals.types[:bool]]
     #   end
     when :if
-      envi, tguard = tc(scope, env, e.children[0]) # guard; any type allowed
+      effs = [RDL::Globals.types[:pure]]
+      envi, tguard, eff_guard = tc(scope, env, e.children[0]) # guard; any type allowed
+      effs.push(*eff_guard)
       # always type check both sides
-      envleft, tleft = if e.children[1].nil? then [envi, RDL::Globals.types[:nil]] else tc(scope, envi, e.children[1]) end # then
-      envright, tright = if e.children[2].nil? then [envi, RDL::Globals.types[:nil]] else tc(scope, envi, e.children[2]) end # else
+      envleft, tleft, eff_left = if e.children[1].nil? then [envi, RDL::Globals.types[:nil], RDL::Type::UnionType.new(*effs).canonical] else tc(scope, envi, e.children[1]) end # then
+      effs.push(*eff_left)
+      envright, tright, eff_right = if e.children[2].nil? then [envi, RDL::Globals.types[:nil], RDL::Type::UnionType.new(*effs).canonical] else tc(scope, envi, e.children[2]) end # else
+      effs.push(*eff_right)
       if tguard.is_a? RDL::Type::SingletonType
-        if tguard.val then [envleft, tleft] else [envright, tright] end
+        if tguard.val then [envleft, tleft, RDL::Type::UnionType.new(*effs).canonical] else [envright, tright, RDL::Type::UnionType.new(*effs).canonical] end
       else
-        [Env.join(e, envleft, envright), RDL::Type::UnionType.new(tleft, tright).canonical]
+        [Env.join(e, envleft, envright), RDL::Type::UnionType.new(tleft, tright).canonical, RDL::Type::UnionType.new(*effs).canonical]
       end
     when :case
       envi = env
@@ -1284,10 +1297,10 @@ RUBY
       effi = [RDL::Globals.types[:pure]]
       e.children.each { |ei|
         envi, ti, eff = tc(scope, envi, ei)
-        puts "Node: #{ei.type}"
-        puts "Type: #{ti}"
-        puts "Effect: #{eff}"
-        effi << eff
+        # puts "Node: #{ei.type}"
+        # puts "Type: #{ti}"
+        # puts "Effect: #{eff}"
+        effi.push(*eff)
       }
       [envi, ti, RDL::Type::UnionType.new(*effi).canonical]
     when :ensure
@@ -1306,29 +1319,34 @@ RUBY
       scope_merge(scope, retry: env, exn: nil) { |rscope|
         begin
           old_retry = rscope[:retry]
-          env_body, tbody = tc(rscope, rscope[:retry], e.children[0])
+          eff_res = [RDL::Globals.types[:pure]]
+          env_body, tbody, eff_body = tc(rscope, rscope[:retry], e.children[0])
+          eff_res << eff_body
           tres = [tbody] # note throw away inferred types from previous iterations---should be okay since should be monotonic
           env_res = [env_body]
           if rscope[:exn]
             e.children[1..-2].each { |resbody|
-              env_resbody, tresbody = tc(rscope, rscope[:exn], resbody)
+              env_resbody, tresbody, eff_resbody = tc(rscope, rscope[:exn], resbody)
               tres << tresbody
               env_res << env_resbody
+              eff_res << eff_resbody
             }
             if e.children[-1]
-              env_else, telse = tc(rscope, rscope[:exn], e.children[-1])
+              env_else, telse, eff_else = tc(rscope, rscope[:exn], e.children[-1])
               tres << telse
               env_res << env_else
+              eff_res << eff_else
             end
           end
         end until old_retry == rscope[:retry]
         # TODO: variables newly bound in *env_res should be unioned with nil
-        [Env.join(e, *env_res), RDL::Type::UnionType.new(*tres).canonical]
+        [Env.join(e, *env_res), RDL::Type::UnionType.new(*tres).canonical, RDL::Type::UnionType.new(*eff_res).canonical]
       }
     when :resbody
       # (resbody (array exns) (lvasgn var) rescue-body)
       envi = env
       texns = []
+      eff_fin = [RDL::Globals.types[:pure]]
       if e.children[0]
         e.children[0].children.each { |exn|
           envi, texn = tc(scope, envi, exn)
@@ -1341,8 +1359,8 @@ RUBY
       if e.children[1]
         envi, _ = tc_vasgn(scope, envi, :lvasgn, e.children[1].children[0], RDL::Type::UnionType.new(*texns), e.children[1])
       end
-      env_fin, t_fin = if e.children[2].nil? then [envi, RDL::Globals.types[:nil]] else tc(scope, envi, e.children[2]) end
-      [env_fin, t_fin]
+      env_fin, t_fin, eff_fin = if e.children[2].nil? then [envi, RDL::Globals.types[:nil]] else tc(scope, envi, e.children[2]) end
+      [env_fin, t_fin, RDL::Type::UnionType.new(*eff_fin).canonical]
     when :super
       envi = env
       tactuals = []
@@ -1508,7 +1526,8 @@ RUBY
         }
       end
       # name is not useful here
-      tc_send(scope, envi, trecv, meth, [*typs, tright], nil, e) # call receiver.meth(other args, tright)
+      envres, tres, teff = tc_send(scope, envi, trecv, meth, [*typs, tright], nil, e) # call receiver.meth(other args, tright)
+      [envres, tres.canonical, RDL::Type::UnionType.new(*effs, teff).canonical]
     else
       raise RuntimeError, "unknown kind #{kind}"
     end
@@ -1648,6 +1667,7 @@ RUBY
             tarms = t.is_a?(RDL::Type::UnionType) ? t.types : [t]
             tarms.each { |t|
               env, ts, effs = tc_send_one_recv(scope, env, t, meth, tactuals, block, e, op_asgn, union)
+              teffs.push(*effs)
               choice_hash[num] = RDL::Type::UnionType.new(*ts).canonical
             }
           rescue StaticTypeError => err
@@ -1671,7 +1691,7 @@ RUBY
       # TODO: envs is all possible different orders
 
       trets.concat(ts)
-      teffs.concat(effs)
+      teffs.push(*effs)
     }
     trets.map! {|t| (t.is_a?(RDL::Type::AnnotatedArgType) || t.is_a?(RDL::Type::BoundArgType)) ? t.type : t}
     return [env, RDL::Type::UnionType.new(*trets), RDL::Type::UnionType.new(*teffs)]
@@ -1690,9 +1710,9 @@ RUBY
     tactuals.each { |t| puts t }
     puts "----------------------"
 =end
-    puts 
-    puts "==="
-    puts "Meth name: #{meth}"
+    # puts 
+    # puts "==="
+    # puts "Meth name: #{meth}"
     if (trecv == RDL::Globals.types[:array])
       trecv = RDL::Type::GenericType.new(RDL::Globals.types[:array], RDL::Globals.types[:bot])
     elsif (trecv == RDL::Globals.types[:hash])
@@ -1721,7 +1741,7 @@ RUBY
           self_inst = trecv
         end
         ts = lookup(scope, trecv_lookup, meth_lookup, e)
-        puts ts
+        # puts ts
         ts = [RDL::Type::MethodType.new([], nil, RDL::Type::NominalType.new(trecv.val))] if init && (ts.nil?) # there's always a nullary new if initialize is undefined
         error :no_singleton_method_type, [trecv.val, meth], e unless ts
         inst = {self: self_inst}
@@ -1760,7 +1780,7 @@ RUBY
     when RDL::Type::NominalType
       ts = lookup(scope, trecv.name, meth, e)
       
-      puts ts
+      # puts ts
       unless ts
         klass = RDL::Util.to_class(scope[:klass])
         if klass.class == Module
@@ -1980,7 +2000,7 @@ RUBY
               got_match = true
             elsif !block_mismatch
               trets_tmp << (current_ret = (tmeth.ret.instantiate(tmeth_inst))) # found a match for this subunion; add its return type to trets_tmp
-              puts "tmeth.eff: #{tmeth.eff}"
+              # puts "tmeth.eff: #{tmeth.eff}"
               teffs_tmp << tmeth.eff
               got_match = true
               if comp_type && RDL::Config.instance.check_comp_types && !union
@@ -2034,7 +2054,6 @@ RUBY
     ## Down here EITHER: apply all deferred constraints, continue with trets OR turn choices into ChoiceTypes, apply those deferred constraints, turn trets into [ret_choice_type]
 
     if arg_choices.empty?
-      puts "Here"
       apply_deferred_constraints(deferred_constraints, e) if !deferred_constraints.empty?
     else
       new_dcs = []
@@ -2084,8 +2103,8 @@ RUBY
       error :arg_type_single_receiver_error, [name, meth, msg], e
     end
     # TODO: issue warning if trets.size > 1 ?
-    puts "trets: #{trets}"
-    puts "teffs: #{teffs}"
+    # puts "trets: #{trets}"
+    # puts "teffs: #{teffs}"
     return [env, trets, teffs]
   end
 
