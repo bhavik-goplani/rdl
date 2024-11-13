@@ -1,4 +1,5 @@
 # coding: utf-8
+require_relative 'cfg'
 module RDL::Typecheck
 
   class StaticTypeError < StandardError; end
@@ -404,7 +405,9 @@ module RDL::Typecheck
       else
         targs_dup = Hash[targs.map { |k, t| [k, t.copy] }] ## args can be mutated in method body. duplicate to avoid this. TODO: check on this
         @num_casts = 0
-        _, body_type, body_eff = tc(scope, Env.new(targs_dup), body)
+        g = RDL::Graph.new
+        _, body_type, body_eff = tc(scope, Env.new(targs_dup), body, g)
+        puts g.to_s
       end
       # puts body_eff.inspect
       # puts ast
@@ -578,8 +581,8 @@ module RDL::Typecheck
     cls.superclass.instance_method(m).owner
   end
 
-  def self.tc(scope, env, e)
-    _tc(scope, env, e)
+  def self.tc(scope, env, e, g)
+    _tc(scope, env, e, g)
   rescue => exn
     raise exn unless RDL::Config.instance.continue_on_errors
 
@@ -594,7 +597,7 @@ module RDL::Typecheck
   # [+ e +] is the expression to type check
   # Returns [env', t], where env' is the type environment at the end of the expression
   # and t is the type of the expression. t is always canonical.
-  def self._tc(scope, env, e)
+  def self._tc(scope, env, e, g)
     case e.type
     when :nil
       [env, RDL::Globals.types[:nil], [RDL::Globals.types[:pure]]]
@@ -962,7 +965,7 @@ module RDL::Typecheck
       scope_merge(scope, block: nil, break: env, next: env) { |sscope|
         e.children[2..-1].each { |ei|
           if ei.type == :splat
-            envi, ti, effi = tc(sscope, envi, ei.children[0])
+            envi, ti, effi = tc(sscope, envi, ei.children[0], g)
             effactuals.push(*effi)
             if ti.is_a? RDL::Type::TupleType
               tactuals.concat ti.params
@@ -986,7 +989,7 @@ module RDL::Typecheck
             end
           elsif ei.type == :block_pass
             raise RuntimeError, "impossible to pass block arg and literal block" if scope[:block]
-            envi, ti, effi = tc(sscope, envi, ei.children[0])
+            envi, ti, effi = tc(sscope, envi, ei.children[0], g)
             effactuals.push(*effi)
             # convert using to_proc if necessary
             if (e.children[1] == :map) || e.children[1] == :sum || e.children[1] == :keep_if
@@ -1005,12 +1008,12 @@ module RDL::Typecheck
               block = [ti, ei]
             end
           else
-            envi, ti, effi = tc(sscope, envi, ei)
+            envi, ti, effi = tc(sscope, envi, ei, g)
             tactuals << ti
             effactuals.push(*effi)
           end
         }
-        envi, trecv, effrecv = if e.children[0].nil? then [envi, envi[:self], RDL::Globals.types[:pure]] else tc(sscope, envi, e.children[0]) end # if no receiver, self is receiver
+        envi, trecv, effrecv = if e.children[0].nil? then [envi, envi[:self], RDL::Globals.types[:pure]] else tc(sscope, envi, e.children[0], g) end # if no receiver, self is receiver
         effactuals.push(*effrecv)
 
         if map_case && trecv.is_a?(RDL::Type::GenericType)
@@ -1281,6 +1284,18 @@ RUBY
         scope[tkw_name] = RDL::Type::UnionType.new(scope[tkw_name], tkw)
       end
       scope[e.type] = Env.join(e, scope[e.type], env)
+
+      # CFA
+      if e.type == :retry
+        g.add_node('retry_node', RDL::Graph::NODE_TYPE[:retry])
+        begin_node = g.get_node(RDL::Graph::NODE_TYPE[:begin])
+        rescue_node = g.get_node(RDL::Graph::NODE_TYPE[:rescue])
+        if !begin_node.nil? && !rescue_node.nil?
+          g.add_edge('retry_node', begin_node)
+          g.add_edge(rescue_node, 'retry_node')
+        end
+      end
+      
       [env, RDL::Globals.types[:bot]]
     when :return
       # TODO return in lambda returns from lambda and not outer scope
@@ -1292,11 +1307,16 @@ RUBY
       error :bad_return_type, [t1.to_s, scope[:tret]], e unless RDL::Type::Type.leq(t1, scope[:tret], ast: e)
       [env1, RDL::Globals.types[:bot]] # return is a void value expression
     when :begin, :kwbegin # sequencing
+      # CFA
+      g.add_node('begin_node', RDL::Graph::NODE_TYPE[:begin])
+      g.add_node('done', RDL::Graph::NODE_TYPE[:done])
+      g.add_edge('begin_node', 'done')
+
       envi = env
       ti = nil
       effi = [RDL::Globals.types[:pure]]
       e.children.each { |ei|
-        envi, ti, eff = tc(scope, envi, ei)
+        envi, ti, eff = tc(scope, envi, ei, g)
         # puts "Node: #{ei.type}"
         # puts "Type: #{ti}"
         # puts "Effect: #{eff}"
@@ -1316,23 +1336,29 @@ RUBY
       # is raised during main-body's execution before those varibles are assigned to.
       # similarly, local variables assigned in resbody will be initialized to nil even if the resbody
       # is never triggered
+       
+      # CFA
+      begin_node = g.get_node(RDL::Graph::NODE_TYPE[:begin])
+      g.add_node('rescue node', RDL::Graph::NODE_TYPE[:rescue])
+      g.add_edge(begin_node, 'rescue node')
+
       scope_merge(scope, retry: env, exn: nil) { |rscope|
         begin
           old_retry = rscope[:retry]
           eff_res = [RDL::Globals.types[:pure]]
-          env_body, tbody, eff_body = tc(rscope, rscope[:retry], e.children[0])
+          env_body, tbody, eff_body = tc(rscope, rscope[:retry], e.children[0], g)
           eff_res << eff_body
           tres = [tbody] # note throw away inferred types from previous iterations---should be okay since should be monotonic
           env_res = [env_body]
           if rscope[:exn]
             e.children[1..-2].each { |resbody|
-              env_resbody, tresbody, eff_resbody = tc(rscope, rscope[:exn], resbody)
+              env_resbody, tresbody, eff_resbody = tc(rscope, rscope[:exn], resbody, g)
               tres << tresbody
               env_res << env_resbody
               eff_res << eff_resbody
             }
             if e.children[-1]
-              env_else, telse, eff_else = tc(rscope, rscope[:exn], e.children[-1])
+              env_else, telse, eff_else = tc(rscope, rscope[:exn], e.children[-1], g)
               tres << telse
               env_res << env_else
               eff_res << eff_else
@@ -1359,7 +1385,7 @@ RUBY
       if e.children[1]
         envi, _ = tc_vasgn(scope, envi, :lvasgn, e.children[1].children[0], RDL::Type::UnionType.new(*texns), e.children[1])
       end
-      env_fin, t_fin, eff_fin = if e.children[2].nil? then [envi, RDL::Globals.types[:nil]] else tc(scope, envi, e.children[2]) end
+      env_fin, t_fin, eff_fin = if e.children[2].nil? then [envi, RDL::Globals.types[:nil]] else tc(scope, envi, e.children[2], g) end
       [env_fin, t_fin, RDL::Type::UnionType.new(*eff_fin).canonical]
     when :super
       envi = env
