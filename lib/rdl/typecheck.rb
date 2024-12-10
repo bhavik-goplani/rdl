@@ -581,7 +581,7 @@ module RDL::Typecheck
     cls.superclass.instance_method(m).owner
   end
 
-  def self.tc(scope, env, e, g)
+  def self.tc(scope, env, e, g=nil)
     _tc(scope, env, e, g)
   rescue => exn
     raise exn unless RDL::Config.instance.continue_on_errors
@@ -597,7 +597,7 @@ module RDL::Typecheck
   # [+ e +] is the expression to type check
   # Returns [env', t], where env' is the type environment at the end of the expression
   # and t is the type of the expression. t is always canonical.
-  def self._tc(scope, env, e, g)
+  def self._tc(scope, env, e, g=nil)
     case e.type
     when :nil
       [env, RDL::Globals.types[:nil], [RDL::Globals.types[:pure]]]
@@ -759,8 +759,17 @@ module RDL::Typecheck
       x = e.children[0]
       # if local var, lhs is bound to nil before assignment is executed! only matters in type checking for locals
       env = env.bind(x, RDL::Globals.types[:nil]) if ((e.type == :lvasgn) && (not (env.has_key? x)))
-      envright, tright, teff = tc(scope, env, e.children[1])
+      envright, tright, teff = tc(scope, env, e.children[1], g)
       ret = tc_vasgn(scope, envright, e.type, x, tright, e)
+
+      # vasgn does not need a new basic block
+      # get the last basic block from the graph using the stack
+      if g
+        bbl = g.peek_stack
+        puts "Current basic block (lvasgn): #{bbl}"
+        bbl.add_effect(teff)
+      end
+      
       ret + [teff]
     when :masgn
       # (masgn (mlhs (Xvasgn var-name) ... (Xvasgn var-name)) rhs)
@@ -1028,6 +1037,13 @@ module RDL::Typecheck
         # puts "tc_send: #{teff}"
         effactuals.push(*teff)
         # puts "effactuals: #{effactuals}"
+        
+        # CFA
+        if g
+          cur_bbl = g.peek_stack 
+          puts "Current basic block (send): #{cur_bbl}"
+          cur_bbl.add_effect(effactuals)
+        end
         [envres, tres.canonical, RDL::Type::UnionType.new(*effactuals).canonical]
       }
     when :yield
@@ -1085,13 +1101,67 @@ RUBY
     #   end
     when :if
       effs = [RDL::Globals.types[:pure]]
-      envi, tguard, eff_guard = tc(scope, env, e.children[0]) # guard; any type allowed
+      puts "Node if: #{e.children[0].type}"
+      puts "Node if then: #{e.children[1].type}"
+      envi, tguard, eff_guard = tc(scope, env, e.children[0], g) # guard; any type allowed
       effs.push(*eff_guard)
+ 
+      cur_bbl = g.peek_stack
+      puts "Current basic block (if): #{cur_bbl}"
+      if_head = RDL::Graph::BasicBlock.new(eff_guard, RDL::Graph::EXPR_TYPE[:if_head])
+      g.add_node(if_head)
+      g.add_edge(cur_bbl, if_head)
+      g.push_to_stack(if_head)
       # always type check both sides
-      envleft, tleft, eff_left = if e.children[1].nil? then [envi, RDL::Globals.types[:nil], RDL::Type::UnionType.new(*effs).canonical] else tc(scope, envi, e.children[1]) end # then
+      if_then_retry = false
+      if_else_retry = false
+      if !e.children[1].nil?
+        if_then = RDL::Graph::BasicBlock.new(effs, RDL::Graph::EXPR_TYPE[:if_then])
+        g.add_node(if_then)
+        g.add_edge(if_head, if_then)
+        g.push_to_stack(if_then)
+      end
+      envleft, tleft, eff_left = if e.children[1].nil? then [envi, RDL::Globals.types[:nil], RDL::Type::UnionType.new(*effs).canonical] else tc(scope, envi, e.children[1], g) end # then
       effs.push(*eff_left)
-      envright, tright, eff_right = if e.children[2].nil? then [envi, RDL::Globals.types[:nil], RDL::Type::UnionType.new(*effs).canonical] else tc(scope, envi, e.children[2]) end # else
+      if !e.children[1].nil? 
+        node = g.pop_from_stack
+        if node.get_expr_type == RDL::Graph::EXPR_TYPE[:retry]
+          g.pop_from_stack
+          if_then_retry = true
+        end
+      end
+
+      if !e.children[2].nil?
+        if_else = RDL::Graph::BasicBlock.new(effs, RDL::Graph::EXPR_TYPE[:if_else])
+        g.add_node(if_else)
+        g.add_edge(if_head, if_else)
+        g.push_to_stack(if_else)
+      end
+
+      envright, tright, eff_right = if e.children[2].nil? then [envi, RDL::Globals.types[:nil], RDL::Type::UnionType.new(*effs).canonical] else tc(scope, envi, e.children[2], g) end # else
       effs.push(*eff_right)
+      if !e.children[2].nil? 
+        node = g.pop_from_stack
+        if node.get_expr_type == RDL::Graph::EXPR_TYPE[:retry]
+          g.pop_from_stack
+          if_else_retry = true
+        end
+      end
+      
+      g.pop_from_stack # not sure if this is necessary
+
+      join = RDL::Graph::BasicBlock.new(effs, RDL::Graph::EXPR_TYPE[:join])
+      if !e.children[1].nil? && !e.children[2].nil? && !if_then_retry && !if_else_retry
+        g.add_node(join)
+        g.join_nodes(if_then, if_else, join)
+      elsif !e.children[1].nil? && !if_then_retry
+        g.add_node(join)
+        g.join_nodes(if_then, if_head, join)
+      elsif !e.children[2].nil? && !if_else_retry
+        g.add_node(join)
+        g.join_nodes(if_else, if_head, join)
+      end
+
       if tguard.is_a? RDL::Type::SingletonType
         if tguard.val then [envleft, tleft, RDL::Type::UnionType.new(*effs).canonical] else [envright, tright, RDL::Type::UnionType.new(*effs).canonical] end
       else
@@ -1280,22 +1350,22 @@ RUBY
       if e.children[0]
         tkw_name = ('t' + e.type.to_s).to_sym
         error :kw_arg_not_allowed, [e.type], e unless scope.has_key? tkw_name
-        env, tkw = tc(scope, env, e.children[0])
+        env, tkw = tc(scope, env, e.children[0], g)
         scope[tkw_name] = RDL::Type::UnionType.new(scope[tkw_name], tkw)
       end
       scope[e.type] = Env.join(e, scope[e.type], env)
-
       # CFA
-      if e.type == :retry
-        g.add_node('retry_node', RDL::Graph::NODE_TYPE[:retry])
-        begin_node = g.get_node(RDL::Graph::NODE_TYPE[:begin])
-        rescue_node = g.get_node(RDL::Graph::NODE_TYPE[:rescue])
-        if !begin_node.nil? && !rescue_node.nil?
-          g.add_edge('retry_node', begin_node)
-          g.add_edge(rescue_node, 'retry_node')
-        end
+      if g
+        cur_bbl = g.peek_stack
+        puts "Current basic block (retry): #{cur_bbl}"
+        begin_bbl = g.get_stack_node(RDL::Graph::EXPR_TYPE[:begin])
+        g.add_edge(cur_bbl, begin_bbl)
+        # Add a dummy retry node to the stack to indicate that we are retrying
+        # Wherever the control flow goes after this will know to not join it to the next node
+        retry_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:retry])
+        g.push_to_stack(retry_bbl)
       end
-      
+
       [env, RDL::Globals.types[:bot]]
     when :return
       # TODO return in lambda returns from lambda and not outer scope
@@ -1307,21 +1377,25 @@ RUBY
       error :bad_return_type, [t1.to_s, scope[:tret]], e unless RDL::Type::Type.leq(t1, scope[:tret], ast: e)
       [env1, RDL::Globals.types[:bot]] # return is a void value expression
     when :begin, :kwbegin # sequencing
-      # CFA
-      g.add_node('begin_node', RDL::Graph::NODE_TYPE[:begin])
-      g.add_node('done', RDL::Graph::NODE_TYPE[:done])
-      g.add_edge('begin_node', 'done')
-
       envi = env
       ti = nil
       effi = [RDL::Globals.types[:pure]]
+      
+      # Create a new basic block for the begin node
+      begin_bbl = RDL::Graph::BasicBlock.new(effi, RDL::Graph::EXPR_TYPE[:begin])
+      g.add_node(begin_bbl)
+      g.push_to_stack(begin_bbl)
+
+      # puts "Begin children #{e.children}"
+
       e.children.each { |ei|
         envi, ti, eff = tc(scope, envi, ei, g)
-        # puts "Node: #{ei.type}"
+        puts "Node: #{ei.type}"
         # puts "Type: #{ti}"
         # puts "Effect: #{eff}"
         effi.push(*eff)
       }
+      g.pop_from_stack
       [envi, ti, RDL::Type::UnionType.new(*effi).canonical]
     when :ensure
       # (ensure main-body ensure-body)
@@ -1338,9 +1412,13 @@ RUBY
       # is never triggered
        
       # CFA
-      begin_node = g.get_node(RDL::Graph::NODE_TYPE[:begin])
-      g.add_node('rescue node', RDL::Graph::NODE_TYPE[:rescue])
-      g.add_edge(begin_node, 'rescue node')
+      cur_bbl = g.peek_stack
+      puts "Current basic block (rescue before): #{cur_bbl}"
+      rescue_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:rescue])
+      g.add_node(rescue_bbl)
+      g.add_edge(cur_bbl, rescue_bbl)
+
+      # puts "Rescue Children: #{e.children}"
 
       scope_merge(scope, retry: env, exn: nil) { |rscope|
         begin
@@ -1350,8 +1428,10 @@ RUBY
           eff_res << eff_body
           tres = [tbody] # note throw away inferred types from previous iterations---should be okay since should be monotonic
           env_res = [env_body]
+          g.push_to_stack(rescue_bbl)
           if rscope[:exn]
             e.children[1..-2].each { |resbody|
+              puts "Node r: #{resbody.type}"
               env_resbody, tresbody, eff_resbody = tc(rscope, rscope[:exn], resbody, g)
               tres << tresbody
               env_res << env_resbody
@@ -1366,6 +1446,9 @@ RUBY
           end
         end until old_retry == rscope[:retry]
         # TODO: variables newly bound in *env_res should be unioned with nil
+        cur_bbl = g.peek_stack
+        puts "Current basic block (rescue after): #{cur_bbl}"
+        g.pop_from_stack
         [Env.join(e, *env_res), RDL::Type::UnionType.new(*tres).canonical, RDL::Type::UnionType.new(*eff_res).canonical]
       }
     when :resbody
@@ -1375,7 +1458,7 @@ RUBY
       eff_fin = [RDL::Globals.types[:pure]]
       if e.children[0]
         e.children[0].children.each { |exn|
-          envi, texn = tc(scope, envi, exn)
+          envi, texn = tc(scope, envi, exn, g)
           error :exn_type, [], exn unless texn.is_a?(RDL::Type::SingletonType) && (texn.val.is_a?(Class) || texn.val.is_a?(Module))
           texns << RDL::Type::NominalType.new(texn.val)
         }
@@ -1385,7 +1468,13 @@ RUBY
       if e.children[1]
         envi, _ = tc_vasgn(scope, envi, :lvasgn, e.children[1].children[0], RDL::Type::UnionType.new(*texns), e.children[1])
       end
+      puts "Node resbody: #{e.children[2].type}"
+      cur_bbl = g.peek_stack
+      puts "Current basic block (resbody before): #{cur_bbl}"
       env_fin, t_fin, eff_fin = if e.children[2].nil? then [envi, RDL::Globals.types[:nil]] else tc(scope, envi, e.children[2], g) end
+      cur_bbl = g.peek_stack
+      puts "Current basic block (resbody after): #{cur_bbl}"
+      cur_bbl.add_effect(eff_fin)
       [env_fin, t_fin, RDL::Type::UnionType.new(*eff_fin).canonical]
     when :super
       envi = env
