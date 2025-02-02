@@ -4,7 +4,7 @@ class RDL::Graph
   # Create an enum for the type of the node
   EXPR_TYPE = {
     :entry => 0,
-    :begin => 1,
+    :begin_main => 1,
     :rescue => 2,
     :retry => 3,
     :done => 4,
@@ -12,12 +12,15 @@ class RDL::Graph
     :if_then => 6,
     :if_else => 7,
     :join => 8,
+    :begin_secondary => 9,
   }
 
   def initialize
     @nodes = {}
     @edges = {}
     @stack = []
+    @begin_visited_main = false
+    @begin_visited_secondary = true
   end
 
   def add_node(node)
@@ -38,6 +41,10 @@ class RDL::Graph
     @stack.pop
   end
 
+  def get_stack
+    @stack
+  end
+
   def peek_stack
     return nil if @stack.empty?
     @stack.last
@@ -54,14 +61,25 @@ class RDL::Graph
     return nil
   end
 
-  def get_node(type)
-    @nodes.each { |n| return n if @nodes[n] == type }
-    return nil
+  def visited_begin_main?
+    @begin_visited_main
+  end
+
+  def set_begin_visited_main(val)
+    @begin_visited_main = val
+  end
+
+  def visited_begin_secondary?
+    @begin_visited_secondary
+  end
+
+  def set_begin_visited_secondary(val)
+    @begin_visited_secondary = val
   end
 
   def to_s
     str = "CFG Nodes:\n"
-    @nodes.each { |n| str += "#{n.to_s}\n\n" }
+    @nodes.each { |n| str += "#{n}\n\n" }
     str += "CFG Edges:\n"
     @edges.each_key { |from|
       @edges[from].each_key { |to|
