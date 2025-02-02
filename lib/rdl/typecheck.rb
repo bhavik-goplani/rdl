@@ -766,7 +766,7 @@ module RDL::Typecheck
       # get the last basic block from the graph using the stack
       if g
         bbl = g.peek_stack
-        puts "Current basic block (lvasgn): #{bbl}"
+        # puts "Current basic block (lvasgn): #{bbl}"
         bbl.add_effect(teff)
       end
       
@@ -1041,7 +1041,7 @@ module RDL::Typecheck
         # CFA
         if g
           cur_bbl = g.peek_stack 
-          puts "Current basic block (send): #{cur_bbl}"
+          # puts "Current basic block (send): #{cur_bbl}"
           cur_bbl.add_effect(effactuals)
         end
         [envres, tres.canonical, RDL::Type::UnionType.new(*effactuals).canonical]
@@ -1101,13 +1101,13 @@ RUBY
     #   end
     when :if
       effs = [RDL::Globals.types[:pure]]
-      puts "Node if: #{e.children[0].type}"
-      puts "Node if then: #{e.children[1].type}"
+      # puts "Node if: #{e.children[0].type}"
+      # puts "Node if then: #{e.children[1].type}"
       envi, tguard, eff_guard = tc(scope, env, e.children[0], g) # guard; any type allowed
       effs.push(*eff_guard)
  
       cur_bbl = g.peek_stack
-      puts "Current basic block (if): #{cur_bbl}"
+      # puts "Current basic block (if): #{cur_bbl}"
       if_head = RDL::Graph::BasicBlock.new(eff_guard, RDL::Graph::EXPR_TYPE[:if_head])
       g.add_node(if_head)
       g.add_edge(cur_bbl, if_head)
@@ -1156,11 +1156,29 @@ RUBY
         g.join_nodes(if_then, if_else, join)
       elsif !e.children[1].nil? && !if_then_retry
         g.add_node(join)
-        g.join_nodes(if_then, if_head, join)
+        if !e.children[2].nil?
+          g.add_edge(if_then, join)
+          g.push_to_stack(join)
+        else
+          g.join_nodes(if_then, if_head, join)
+        end
+      elsif !e.children[1].nil? && if_then_retry
+        g.add_node(join)
+        g.add_edge(if_head, join)
+        g.push_to_stack(join)
       elsif !e.children[2].nil? && !if_else_retry
         g.add_node(join)
-        g.join_nodes(if_else, if_head, join)
+        if !e.children[1].nil?
+          g.add_edge(if_else, join)
+          g.push_to_stack(join)
+        else
+          g.join_nodes(if_else, if_head, join)
+        end
       end
+
+      # puts "----------------- Stack -----------------"
+      # puts g.get_stack
+      # puts "----------------- Stack -----------------"
 
       if tguard.is_a? RDL::Type::SingletonType
         if tguard.val then [envleft, tleft, RDL::Type::UnionType.new(*effs).canonical] else [envright, tright, RDL::Type::UnionType.new(*effs).canonical] end
@@ -1357,8 +1375,11 @@ RUBY
       # CFA
       if g
         cur_bbl = g.peek_stack
-        puts "Current basic block (retry): #{cur_bbl}"
-        begin_bbl = g.get_stack_node(RDL::Graph::EXPR_TYPE[:begin])
+        # puts "Current basic block (retry): #{cur_bbl}"
+        begin_bbl = g.get_stack_node(RDL::Graph::EXPR_TYPE[:begin_main])
+        # puts "-----------------"
+        # puts "Begin basic block: #{begin_bbl}"
+        # puts "-----------------"
         g.add_edge(cur_bbl, begin_bbl)
         # Add a dummy retry node to the stack to indicate that we are retrying
         # Wherever the control flow goes after this will know to not join it to the next node
@@ -1382,20 +1403,48 @@ RUBY
       effi = [RDL::Globals.types[:pure]]
       
       # Create a new basic block for the begin node
-      begin_bbl = RDL::Graph::BasicBlock.new(effi, RDL::Graph::EXPR_TYPE[:begin])
-      g.add_node(begin_bbl)
-      g.push_to_stack(begin_bbl)
+      if !g.visited_begin_main?
+        begin_main_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:begin_main])
+        g.add_node(begin_main_bbl)
+        g.push_to_stack(begin_main_bbl)
+        g.set_begin_visited_main(true)
+      end
+      
+      if !g.visited_begin_secondary?
+        cur_bbl = g.peek_stack
+        # puts "Current basic block (begin_secondary): #{cur_bbl}"
+        begin_secondary_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:begin_secondary])
+        g.add_node(begin_secondary_bbl)
+        g.add_edge(cur_bbl, begin_secondary_bbl)
+        g.push_to_stack(begin_secondary_bbl)
+      end
 
       # puts "Begin children #{e.children}"
 
       e.children.each { |ei|
         envi, ti, eff = tc(scope, envi, ei, g)
-        puts "Node: #{ei.type}"
+        # puts "Node: #{ei.type}"
         # puts "Type: #{ti}"
         # puts "Effect: #{eff}"
         effi.push(*eff)
       }
-      g.pop_from_stack
+
+      if !g.visited_begin_main?
+        # puts "----------------- Stack begin -----------------"
+        # puts g.get_stack
+        # puts "----------------- Stack begin -----------------"
+        done_bbl = g.get_stack_node(RDL::Graph::EXPR_TYPE[:done])
+        begin_main_bbl = g.get_stack_node(RDL::Graph::EXPR_TYPE[:begin_main])
+        g.add_edge(begin_main_bbl, done_bbl)
+        # begin_main_bbl.add_effect(effi)
+        g.pop_from_stack
+      end
+
+      if !g.visited_begin_secondary?
+        # g.pop_from_stack
+        begin_secondary_bbl = g.get_stack_node(RDL::Graph::EXPR_TYPE[:begin_secondary])
+        # begin_secondary_bbl.add_effect(effi)
+      end
       [envi, ti, RDL::Type::UnionType.new(*effi).canonical]
     when :ensure
       # (ensure main-body ensure-body)
@@ -1413,7 +1462,7 @@ RUBY
        
       # CFA
       cur_bbl = g.peek_stack
-      puts "Current basic block (rescue before): #{cur_bbl}"
+      # puts "Current basic block (rescue before): #{cur_bbl}"
       rescue_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:rescue])
       g.add_node(rescue_bbl)
       g.add_edge(cur_bbl, rescue_bbl)
@@ -1425,13 +1474,15 @@ RUBY
           old_retry = rscope[:retry]
           eff_res = [RDL::Globals.types[:pure]]
           env_body, tbody, eff_body = tc(rscope, rscope[:retry], e.children[0], g)
+          g.set_begin_visited_secondary(false)
+          begin_main_bbl = g.get_stack_node(RDL::Graph::EXPR_TYPE[:begin_main])
+          begin_main_bbl.add_effect(eff_body)
           eff_res << eff_body
           tres = [tbody] # note throw away inferred types from previous iterations---should be okay since should be monotonic
           env_res = [env_body]
           g.push_to_stack(rescue_bbl)
           if rscope[:exn]
             e.children[1..-2].each { |resbody|
-              puts "Node r: #{resbody.type}"
               env_resbody, tresbody, eff_resbody = tc(rscope, rscope[:exn], resbody, g)
               tres << tresbody
               env_res << env_resbody
@@ -1447,8 +1498,17 @@ RUBY
         end until old_retry == rscope[:retry]
         # TODO: variables newly bound in *env_res should be unioned with nil
         cur_bbl = g.peek_stack
-        puts "Current basic block (rescue after): #{cur_bbl}"
-        g.pop_from_stack
+        # puts "Current basic block (rescue after): #{cur_bbl}"
+        # Done has the effects of both the rescue and the body
+        # puts "----------------- Stack rescue -----------------" 
+        # puts g.get_stack
+        # puts "----------------- Stack rescue -----------------"
+        done_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:done])
+        g.add_node(done_bbl)
+        g.push_to_stack(done_bbl)
+        done_bbl.add_effect(eff_res)
+        g.add_edge(cur_bbl, done_bbl)
+        g.set_begin_visited_main(false)
         [Env.join(e, *env_res), RDL::Type::UnionType.new(*tres).canonical, RDL::Type::UnionType.new(*eff_res).canonical]
       }
     when :resbody
@@ -1468,12 +1528,12 @@ RUBY
       if e.children[1]
         envi, _ = tc_vasgn(scope, envi, :lvasgn, e.children[1].children[0], RDL::Type::UnionType.new(*texns), e.children[1])
       end
-      puts "Node resbody: #{e.children[2].type}"
+      # puts "Node resbody: #{e.children[2].type}"
       cur_bbl = g.peek_stack
-      puts "Current basic block (resbody before): #{cur_bbl}"
+      # puts "Current basic block (resbody before): #{cur_bbl}"
       env_fin, t_fin, eff_fin = if e.children[2].nil? then [envi, RDL::Globals.types[:nil]] else tc(scope, envi, e.children[2], g) end
       cur_bbl = g.peek_stack
-      puts "Current basic block (resbody after): #{cur_bbl}"
+      # puts "Current basic block (resbody after): #{cur_bbl}"
       cur_bbl.add_effect(eff_fin)
       [env_fin, t_fin, RDL::Type::UnionType.new(*eff_fin).canonical]
     when :super
