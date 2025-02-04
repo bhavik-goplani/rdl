@@ -124,9 +124,27 @@ attr_accessor :nodes, :edges
   # a node with a state or an already visited node (back edge) - add effects along the way
   # Note: if the node has a state, generate the predicate and reset the effects
   # 
-  # Caution: Don't reset the effects blindly. Once you come back to where the control flow diverged, 
+  # Caution: Don't reset the effects blindly. Once we come back to where the control flow diverged, 
   # the effects should be reset to before the divergence
   # 
+  # Back Edge Naive implementation:
+  # Currently we use a hashset to check the number of times a node is visited
+  # If a node is visited more than once, it is a back edge, we generate the predicate but don't
+  # visit its neighbors
+  #
+  # Improved Back Edge implementation:
+  # if we need to revisit nodes with different accumulated states or effects, 
+  # we’d keep a more detailed visited structure, like marking (node, from_state, effect_signature) 
+  # as visited rather than just (node). 
+  # That way, we allow revisiting the same node if it arrives with a different set of relevant states or effects.
+  # Otherwise, if the exact same combination of node and effect state reappears,
+  # we skip it to avoid infinite recursion.
+  # 
+  #
+  # Notes:     
+  # && (v'.write > v'.read ==> v'.write - v'.read <= 1)
+  # We can add the above clause if read and write check the same resource.
+  # Need more though when to add this clause
   #
   # END
   
@@ -163,19 +181,24 @@ attr_accessor :nodes, :edges
     pred_str
   end
 
-  def live_dfs(current_node, from_state = :Initial, visited = Set.new, effects_so_far = [])
-    # logic for back edges
-    return if visited.include?(current_node)
-    visited << current_node
+  def live_dfs(current_node, from_state = :Initial, visited = {}, effects_so_far = [])
+    if visited[current_node]
+      visited[current_node] += 1
+    else
+      visited[current_node] = 1
+    end
 
-    new_effects = effects_so_far + extract_effect_symbols(current_node.effects)
     current_state = get_dafny_state(current_node)
 
     if current_state && from_state != current_state
-      puts generate_predicate(from_state, current_state, new_effects)
+      puts generate_predicate(from_state, current_state, effects_so_far)
       from_state = current_state
-      new_effects = []
+      effects_so_far = []
     end
+
+    return if visited[current_node] == 2
+
+    new_effects = effects_so_far + extract_effect_symbols(current_node.effects)
 
     neighbors = @edges[current_node] || {}
     neighbors.each_key do |next_node|

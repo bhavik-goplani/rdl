@@ -17,15 +17,20 @@ require 'tempfile'
 #     && v'.success <= 1
 # }
 # }
+# 
+# To Do: Multiple resbody, path sensitive effects (Rescue shows effects of both branches)
+
 class TestControlFlow < Minitest::Test
   extend RDL::Annotate
 
-  type :dummy, '() -> Integer [open]', typecheck: :controlflow
+  type :dummy, '() -> Integer [open or close]', typecheck: :controlflow
   def dummy
     begin
       f = File.open('test')
       1+1
-    rescue
+    rescue IOError => e
+      a = 1+1
+      f.close
       if f == nil
         retry
       end
