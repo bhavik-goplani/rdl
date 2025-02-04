@@ -408,6 +408,7 @@ module RDL::Typecheck
         g = RDL::Graph.new
         _, body_type, body_eff = tc(scope, Env.new(targs_dup), body, g)
         puts g.to_s
+        g.to_dafny
       end
       # puts body_eff.inspect
       # puts ast
