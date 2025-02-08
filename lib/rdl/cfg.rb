@@ -31,6 +31,8 @@ attr_accessor :nodes, :edges
     @stack = []
     @begin_visited_main = false
     @begin_visited_secondary = true
+    @predicates = ""
+    @pred_name = []
   end
 
   def add_node(node)
@@ -154,6 +156,7 @@ attr_accessor :nodes, :edges
   end
 
   def generate_predicate(from_state, to_state, effects)
+    @pred_name.push("TransitionFrom#{from_state}To#{to_state}")
     pred_str = "predicate TransitionFrom#{from_state}To#{to_state} (v:Variables, v':Variables)\n"
     pred_str << "  requires Valid(v)\n{\n"
     pred_str << "  && v.state == #{from_state}\n"
@@ -177,7 +180,10 @@ attr_accessor :nodes, :edges
       pred_str << "  && v'.success == v.success == 0\n"
     end
 
+    pred_str << "  && (v.write > v.read ==> v.write - v.read <= 1)\n"
+
     pred_str << "}\n\n"
+    @predicates << pred_str
     pred_str
   end
 
@@ -191,7 +197,7 @@ attr_accessor :nodes, :edges
     current_state = get_dafny_state(current_node)
 
     if current_state && from_state != current_state
-      puts generate_predicate(from_state, current_state, effects_so_far)
+      generate_predicate(from_state, current_state, effects_so_far)
       from_state = current_state
       effects_so_far = []
     end
@@ -225,6 +231,153 @@ attr_accessor :nodes, :edges
 
   def to_dafny
     live_dfs(@nodes.keys.first)
+    
+    dafny_types = "datatype State = Initial | Error | Done\n
+datatype Variables = Variables(
+  read:nat,
+  write:nat,
+  success:nat,
+  state:State
+)
+
+predicate Init(v:Variables)
+{
+  && v.state == Initial
+  && v.read > 0
+  && v.write > 0
+  && (v.write > v.read ==> v.write - v.read <= 1)
+  && v.success == 0
+}\n\n"
+
+    dafny_step = "datatype Step = \n"
+    @pred_name.each do |pred|
+      dafny_step << "  | #{pred}Step()\n"
+    end
+    dafny_step << "\n"
+
+    dafny_next_step = "predicate NextStep(v:Variables, v':Variables, step:Step)
+  requires Valid(v)
+{
+  match step"
+    @pred_name.each do |pred|
+      dafny_next_step << "\n\t  case #{pred}Step() => #{pred}(v, v')"
+    end
+    dafny_next_step << "\n}\n\n"
+
+    dafny_next = "predicate Next(v:Variables, v':Variables)
+  requires Valid(v)
+{
+  exists step :: NextStep(v, v', step)
+}\n\n"
+    
+    dafny_valid = "predicate Valid(v:Variables)
+{
+    && (v.state == Initial || v.state == Error ==> v.success == 0)
+    && (v.state == Done ==> v.success == 1)
+    && v.write >= 0
+    && v.read >= 0
+    && (v.write > v.read ==> v.write - v.read <= 1)
+}\n\n"
+
+    dafny_valid_transition = "predicate ValidTransition(v:Variables, v':Variables)
+{
+    && v.read - v'.read <= 1
+    && v.write - v'.write <= 1
+    && v'.success - v.success <= 1
+    && v.read + v.write > v'.read + v'.write
+}\n\n"
+
+    dafny_safety = "lemma SafetyProof()
+ensures forall v | Init(v) :: Valid(v)
+ensures forall v, v' | Valid(v) && Next(v, v') && ValidTransition(v,v') :: Valid(v')
+{
+}\n\n"
+
+    dafny_liveness = "type Trace = nat -> Variables
+
+ghost predicate IsTrace(trace: Trace)
+{
+    Init(trace(0)) &&
+    forall i: nat :: Valid(trace(i)) && Next(trace(i), trace(i+1)) && ValidTransition(trace(i), trace(i+1)) ==> Valid(trace(i+1))
+}
+
+lemma SafetyProofTrace(trace: Trace)
+    requires Init(trace(0))
+{
+    // Base case:
+    assert Init(trace(0));
+    assert Valid(trace(0));
+
+    assert Valid(trace(0)) && Next(trace(0), trace(1)) ==> Valid(trace(1)) && ValidTransition(trace(0), trace(1));
+    assert Valid(trace(1)) && Next(trace(1), trace(2)) ==> Valid(trace(2)) && ValidTransition(trace(1), trace(2));
+
+    // Inductive step:
+    forall i | i >= 0
+        ensures Valid(trace(i)) && Next(trace(i), trace(i+1)) && ValidTransition(trace(i), trace(i+1)) ==> Valid(trace(i+1)) 
+    {
+        if Valid(trace(i)) && Next(trace(i), trace(i+1)){
+            assert trace(i).success <= 1;
+            if trace(i+1).state == Done {
+                assert trace(i+1).success == 1;
+            }
+        }
+        assert Valid(trace(i)) && Next(trace(i), trace(i+1)) && ValidTransition(trace(i), trace(i+1)) ==> Valid(trace(i+1));
+        if Valid(trace(i)) && Next(trace(i), trace(i+1)) && Valid(trace(i+1)) && ValidTransition(trace(i), trace(i+1)) {
+            assert trace(i).read + trace(i).write > trace(i+1).read + trace(i+1).write; 
+            assert trace(i+1).success <= 1;
+        }
+    }
+}
+
+// Assume that the network errors will eventually correct
+ghost predicate FairNetwork(trace: Trace) 
+{
+    IsTrace(trace) &&
+    forall n: nat :: HasDone(n, trace)
+}
+
+ghost predicate HasDone(n: nat, trace: Trace)
+{
+    exists n' :: n <= n' && trace(n').state == Done && trace(n').success == 1
+}
+
+lemma LivenessProof(trace: Trace, n: nat)
+        returns (n': nat)
+    requires IsTrace(trace) && FairNetwork(trace)
+    requires Init(trace(n))
+    requires forall i: nat :: i >= n ==> (Valid(trace(i)) && Next(trace(i), trace(i+1)))
+    ensures n <= n' && trace(n').state == Done && trace(n').success == 1
+{
+    n' := n;
+    while true
+        invariant n <= n'
+        invariant (Valid(trace(n)) && Next(trace(n), trace(n+1)))
+        invariant Valid(trace(n')) && Next(trace(n'), trace(n'+1)) && ValidTransition(trace(n'), trace(n'+1)) && Valid(trace(n'+1))
+        decreases if Valid(trace(n')) && Next(trace(n'), trace(n'+1)) && Valid(trace(n'+1)) && ValidTransition(trace(n'), trace(n'+1)) then trace(n').read + trace(n').write else 0
+    {
+        SafetyProofTrace(trace);
+        var prev := trace(n').read + trace(n').write;
+        var prev_n := n';
+
+        n' := n' + 1;
+
+        assert (trace(n').read + trace(n').write) < prev;
+
+        if trace(n').state == Done {
+            assert trace(n').success == 1;
+            break;
+        }
+    }
+    assert trace(n').state == Done;
+    assert trace(n').success == 1;
+}\n\n"
+
+    # Combine all the dafny code and write it to a file
+    dafny_code = dafny_types + @predicates + dafny_step + dafny_next_step + dafny_next + dafny_valid + dafny_valid_transition + dafny_safety + dafny_liveness
+    File.open("dafny_code.dfy", "w") { |f| f.write(dafny_code) }
+    puts dafny_code
+    puts "Dafny code written to dafny_code.dfy"
+
   end
 
 end
