@@ -16,7 +16,7 @@ predicate Init(v:Variables)
   && v.success == 0
 }
 
-predicate WriteFail (v:Variables, v':Variables)
+predicate TransitionFromInitialToError (v:Variables, v':Variables)
   requires Valid(v)
 {
   && v.state == Initial
@@ -27,7 +27,18 @@ predicate WriteFail (v:Variables, v':Variables)
   && (v.write > v.read ==> v.write - v.read <= 1)
 }
 
-predicate ReadSuccessWriteFail (v:Variables, v':Variables)
+predicate TransitionFromErrorToError (v:Variables, v':Variables)
+  requires Valid(v)
+{
+  && v.state == Error
+  && v'.state == Error
+  && v'.read == v.read - 1
+  && v'.write == v.write
+  && v'.success == v.success == 0
+  && (v.write > v.read ==> v.write - v.read <= 1)
+}
+
+predicate TransitionFromErrorToInitial (v:Variables, v':Variables)
   requires Valid(v)
 {
   && v.state == Error
@@ -38,7 +49,7 @@ predicate ReadSuccessWriteFail (v:Variables, v':Variables)
   && (v.write > v.read ==> v.write - v.read <= 1)
 }
 
-predicate ReadSuccessWriteSuccess (v:Variables, v':Variables)
+predicate TransitionFromErrorToDone (v:Variables, v':Variables)
   requires Valid(v)
 {
   && v.state == Error
@@ -50,7 +61,7 @@ predicate ReadSuccessWriteSuccess (v:Variables, v':Variables)
   && (v.write > v.read ==> v.write - v.read <= 1)
 }
 
-predicate WriteSuccess (v:Variables, v':Variables)
+predicate TransitionFromInitialToDone (v:Variables, v':Variables)
   requires Valid(v)
 {
   && v.state == Initial
@@ -63,29 +74,27 @@ predicate WriteSuccess (v:Variables, v':Variables)
 }
 
 datatype Step = 
-  | WriteFailStep()
-  | ReadSuccessWriteFailStep()
-  | ReadSuccessWriteSuccessStep()
-  | WriteSuccessStep()
+  | TransitionFromInitialToErrorStep()
+  | TransitionFromErrorToErrorStep()
+  | TransitionFromErrorToInitialStep()
+  | TransitionFromErrorToDoneStep()
+  | TransitionFromInitialToDoneStep()
 
 predicate NextStep(v:Variables, v':Variables, step:Step)
   requires Valid(v)
 {
   match step
-	  case WriteFailStep() => WriteFail(v, v')
-	  case ReadSuccessWriteFailStep() => ReadSuccessWriteFail(v, v')
-	  case ReadSuccessWriteSuccessStep() => ReadSuccessWriteSuccess(v, v')
-	  case WriteSuccessStep() => WriteSuccess(v, v')
+	  case TransitionFromInitialToErrorStep() => TransitionFromInitialToError(v, v')
+	  case TransitionFromErrorToErrorStep() => TransitionFromErrorToError(v, v')
+	  case TransitionFromErrorToInitialStep() => TransitionFromErrorToInitial(v, v')
+	  case TransitionFromErrorToDoneStep() => TransitionFromErrorToDone(v, v')
+	  case TransitionFromInitialToDoneStep() => TransitionFromInitialToDone(v, v')
 }
 
 predicate Next(v:Variables, v':Variables)
   requires Valid(v)
 {
-  || WriteSuccess(v,v')
-  || WriteFail(v,v')
-  || ReadSuccessWriteFail(v,v')
-  || ReadSuccessWriteSuccess(v,v')
-  // exists step :: NextStep(v, v', step)
+  exists step :: NextStep(v, v', step)
 }
 
 predicate Valid(v:Variables)
@@ -94,7 +103,7 @@ predicate Valid(v:Variables)
     && (v.state == Done ==> v.success == 1)
     && v.write >= 0
     && v.read >= 0
-    && (v.write > v.read ==> v.write - v.read <= 1)
+    && (v.write > v.read ==> v.write - v.read <= 2)
 }
 
 predicate ValidTransition(v:Variables, v':Variables)

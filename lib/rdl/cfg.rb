@@ -12,7 +12,8 @@ attr_accessor :nodes, :edges
     :if_then => 6,
     :if_else => 7,
     :join => 8,
-    :begin_secondary => 9,
+    :begin_secondary => 9, # includes all effects in the rescue block
+    :begin_with_rescue => 10
   }
 
   EXPR_TYPE_TO_STATE = {
@@ -22,7 +23,8 @@ attr_accessor :nodes, :edges
     RDL::Graph::EXPR_TYPE[:begin_secondary] => nil,    # not a state boundary
     RDL::Graph::EXPR_TYPE[:if_head]         => nil,    # not a state boundary
     RDL::Graph::EXPR_TYPE[:if_then]         => nil,    # not a state boundary
-    RDL::Graph::EXPR_TYPE[:join]            => nil     # not a state boundary
+    RDL::Graph::EXPR_TYPE[:join]            => nil,     # not a state boundary
+    RDL::Graph::EXPR_TYPE[:begin_with_rescue] => nil   # not a state boundary
   }
 
   def initialize
@@ -33,6 +35,8 @@ attr_accessor :nodes, :edges
     @begin_visited_secondary = true
     @predicates = ""
     @pred_name = []
+    @retryable_begin_scopes = []
+    # @counter_set = Set.new # Expr type to count mapping
   end
 
   def add_node(node)
@@ -59,6 +63,10 @@ attr_accessor :nodes, :edges
 
   def peek_stack
     return nil if @stack.empty?
+    if @stack.last.get_expr_type == EXPR_TYPE[:retry]
+      @stack.pop
+      return peek_stack
+    end
     @stack.last
   end
 
@@ -71,6 +79,19 @@ attr_accessor :nodes, :edges
   def get_stack_node(type)
     @stack.reverse.each { |n| return n if @nodes[n] == type }
     return nil
+  end
+
+  def add_to_scope(node)
+    @retryable_begin_scopes.push(node)
+  end
+
+  def remove_from_scope
+    @retryable_begin_scopes.pop
+  end
+
+  def get_retryable_begin_node
+    return nil if @retryable_begin_scopes.empty?
+    @retryable_begin_scopes.last
   end
 
   def visited_begin_main?
@@ -194,10 +215,14 @@ attr_accessor :nodes, :edges
       visited[current_node] = 1
     end
 
+    # puts "Visiting #{current_node} with effects so far: #{effects_so_far}\n"
+
     current_state = get_dafny_state(current_node)
 
-    if current_state && from_state != current_state
-      generate_predicate(from_state, current_state, effects_so_far)
+    if (current_state && from_state != current_state) || (from_state == :Error && current_state)
+      # puts "Generating predicate from #{from_state} to #{current_state} with effects so far: #{effects_so_far}"
+      # puts "Current Node: #{current_node}\n"
+      puts generate_predicate(from_state, current_state, effects_so_far)
       from_state = current_state
       effects_so_far = []
     end
@@ -206,6 +231,8 @@ attr_accessor :nodes, :edges
 
     new_effects = effects_so_far + extract_effect_symbols(current_node.effects)
 
+    # puts "Visiting #{current_node} with new effects: #{new_effects}\n"
+
     neighbors = @edges[current_node] || {}
     neighbors.each_key do |next_node|
       live_dfs(next_node, from_state, visited, new_effects.dup)
@@ -213,6 +240,9 @@ attr_accessor :nodes, :edges
   end
 
   def extract_effect_symbols(effects_arr)
+    # If it is a Union type, check the types array of the Union type and see if it is a VarType
+    # To improve this, make symbols a key-value pair with the obj id as the value
+    # and effect (fine-grained parametric) as the key (effect => obj_id)
     symbols = []
     
     effects_arr = [effects_arr] unless effects_arr.is_a?(Array)
@@ -223,6 +253,22 @@ attr_accessor :nodes, :edges
           symbols << :write
         when :close
           symbols << :read
+        when :write
+          symbols << :write
+        end
+      end
+      if eff.is_a?(RDL::Type::UnionType)
+        eff.types.each do |type|
+          if type.is_a?(RDL::Type::VarType)
+            case type.name
+            when :open
+              symbols << :write
+            when :close
+              symbols << :read
+            when :write
+              symbols << :write
+            end
+          end
         end
       end
     end
@@ -375,17 +421,18 @@ lemma LivenessProof(trace: Trace, n: nat)
     # Combine all the dafny code and write it to a file
     dafny_code = dafny_types + @predicates + dafny_step + dafny_next_step + dafny_next + dafny_valid + dafny_valid_transition + dafny_safety + dafny_liveness
     File.open("dafny_code.dfy", "w") { |f| f.write(dafny_code) }
-    puts dafny_code
-    puts "Dafny code written to dafny_code.dfy"
+    # puts @predicates
+    # puts dafny_code
+    # puts "Dafny code written to dafny_code.dfy"
 
   end
 
 end
 
 class RDL::Graph::BasicBlock
-  attr_accessor :effects, :expr_type
+  attr_accessor :effects, :expr_type, :counter
 
-  def initialize(effects, expr_type = nil)
+  def initialize(effects, expr_type = nil, counter = 0)
     @effects = effects
     @expr_type = expr_type
   end

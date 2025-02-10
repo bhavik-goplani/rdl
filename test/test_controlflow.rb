@@ -23,14 +23,14 @@ require 'tempfile'
 class TestControlFlow < Minitest::Test
   extend RDL::Annotate
 
-  type :dummy, '() -> Integer [open or close]', typecheck: :controlflow
+  type :dummy, '() -> Integer [open or close or write]', typecheck: :controlflow
   def dummy
     begin
       f = File.open('test')
       1+1
     rescue IOError => e
       a = 1+1
-      f.close
+      b = f.close rescue retry
       if f == nil
         retry
       end
