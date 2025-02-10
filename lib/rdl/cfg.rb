@@ -271,6 +271,14 @@ attr_accessor :nodes, :edges
           end
         end
       end
+      if eff.is_a?(RDL::Type::NominalType)
+        case eff.name
+        when "Write"
+          symbols << :write
+        when "Read"
+          symbols << :read
+        end
+      end
     end
     symbols
   end
@@ -344,7 +352,7 @@ ensures forall v, v' | Valid(v) && Next(v, v') && ValidTransition(v,v') :: Valid
 ghost predicate IsTrace(trace: Trace)
 {
     Init(trace(0)) &&
-    forall i: nat :: Valid(trace(i)) && Next(trace(i), trace(i+1)) && ValidTransition(trace(i), trace(i+1)) ==> Valid(trace(i+1))
+    forall i: nat :: Valid(trace(i)) && Next(trace(i), trace(i+1)) ==> Valid(trace(i+1)) && ValidTransition(trace(i), trace(i+1))
 }
 
 lemma SafetyProofTrace(trace: Trace)

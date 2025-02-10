@@ -630,7 +630,7 @@ module RDL::Typecheck
       prec_str = []
       envi = env
       e.children.each { |ei|
-        envi, ti = tc(scope, envi, ei)
+        envi, ti = tc(scope, envi, ei, g)
         if RDL::Config.instance.use_precise_string
           if ei.type == :str || ei.type == :string
             ## for strings, just append the string itself
