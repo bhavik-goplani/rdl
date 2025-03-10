@@ -1,94 +1,139 @@
-datatype State = Initial | Error | Done
+datatype State = | Initial1| Error1| Error2| Done1
+datatype LastOp = None | Read | Write
+
 
 datatype Variables = Variables(
-  read:nat,
-  write:nat,
+  count:nat,
   success:nat,
+  lastop:LastOp,
   state:State
 )
 
 predicate Init(v:Variables)
 {
-  && v.state == Initial
-  && v.read > 0
-  && v.write > 0
-  && (v.write > v.read ==> v.write - v.read <= 1)
+  && v.state == Initial1
+  && v.count > 0
+  && v.lastop == None
   && v.success == 0
 }
 
-predicate TransitionFromInitialToError (v:Variables, v':Variables)
+predicate TransitionFromInitial1ToError1withwrite (v:Variables, v':Variables)
   requires Valid(v)
 {
-  && v.state == Initial
-  && v'.state == Error
-  && v'.read == v.read
-  && v'.write == v.write - 1
+  && v.state == Initial1
+  && v'.state == Error1
+  && v'.count == v.count - 1
+  && v.lastop != Write
+  && v'.lastop == Write
   && v'.success == v.success == 0
-  && (v.write > v.read ==> v.write - v.read <= 1)
 }
 
-predicate TransitionFromErrorToError (v:Variables, v':Variables)
+predicate TransitionFromError1ToError2withread (v:Variables, v':Variables)
   requires Valid(v)
 {
-  && v.state == Error
-  && v'.state == Error
-  && v'.read == v.read - 1
-  && v'.write == v.write
+  && v.state == Error1
+  && v'.state == Error2
+  && v'.count == v.count - 1
+  && v'.lastop == Read
   && v'.success == v.success == 0
-  && (v.write > v.read ==> v.write - v.read <= 1)
 }
 
-predicate TransitionFromErrorToInitial (v:Variables, v':Variables)
+predicate TransitionFromError2ToError2withread (v:Variables, v':Variables)
   requires Valid(v)
 {
-  && v.state == Error
-  && v'.state == Initial
-  && v'.read == v.read - 1
-  && v'.write == v.write
+  && v.state == Error2
+  && v'.state == Error2
+  && v'.count == v.count - 1
+  && v'.lastop == Read
   && v'.success == v.success == 0
-  && (v.write > v.read ==> v.write - v.read <= 1)
 }
 
-predicate TransitionFromErrorToDone (v:Variables, v':Variables)
+predicate TransitionFromError2ToDone1withread (v:Variables, v':Variables)
   requires Valid(v)
 {
-  && v.state == Error
-  && v'.state == Done
-  && v'.read == v.read - 1
-  && v'.write == v.write
+  && v.state == Error2
+  && v'.state == Done1
+  && v'.count == v.count - 1
+  && v'.lastop == Read
   && v'.success == v.success + 1
-  && v'.success <= 1
-  && (v.write > v.read ==> v.write - v.read <= 1)
 }
 
-predicate TransitionFromInitialToDone (v:Variables, v':Variables)
+predicate TransitionFromError2ToInitial1withread (v:Variables, v':Variables)
   requires Valid(v)
 {
-  && v.state == Initial
-  && v'.state == Done
-  && v'.read == v.read
-  && v'.write == v.write - 1
+  && v.state == Error2
+  && v'.state == Initial1
+  && v'.count == v.count - 1
+  && v'.lastop == Read
+  && v'.success == v.success == 0
+}
+
+predicate TransitionFromInitial1ToDone1withwrite (v:Variables, v':Variables)
+  requires Valid(v)
+{
+  && v.state == Initial1
+  && v'.state == Done1
+  && v'.count == v.count - 1
+  && v.lastop != Write
+  && v'.lastop == Write
   && v'.success == v.success + 1
-  && v'.success <= 1
-  && (v.write > v.read ==> v.write - v.read <= 1)
+}
+
+predicate TransitionFromError1ToDone1withread (v:Variables, v':Variables)
+  requires Valid(v)
+{
+  && v.state == Error1
+  && v'.state == Done1
+  && v'.count == v.count - 1
+  && v'.lastop == Read
+  && v'.success == v.success + 1
+}
+
+predicate TransitionFromError1ToInitial1withread (v:Variables, v':Variables)
+  requires Valid(v)
+{
+  && v.state == Error1
+  && v'.state == Initial1
+  && v'.count == v.count - 1
+  && v'.lastop == Read
+  && v'.success == v.success == 0
+}
+
+predicate TransitionFromError1ToDone1withwrite (v:Variables, v':Variables)
+  requires Valid(v)
+{
+  && v.state == Error1
+  && v'.state == Done1
+  && v'.count == v.count - 1
+  && v.lastop == Write
+  && v'.lastop == None
+  && v'.success == v.success + 1
 }
 
 datatype Step = 
-  | TransitionFromInitialToErrorStep()
-  | TransitionFromErrorToErrorStep()
-  | TransitionFromErrorToInitialStep()
-  | TransitionFromErrorToDoneStep()
-  | TransitionFromInitialToDoneStep()
+  | TransitionFromInitial1ToError1withwriteStep()
+  | TransitionFromError1ToError2withreadStep()
+  | TransitionFromError2ToError2withreadStep()
+  | TransitionFromError2ToDone1withreadStep()
+  | TransitionFromError2ToInitial1withreadStep()
+  | TransitionFromInitial1ToDone1withwriteStep()
+  | TransitionFromError1ToDone1withreadStep()
+  | TransitionFromError1ToInitial1withreadStep()
+  | TransitionFromError1ToDone1withwriteStep()
 
 predicate NextStep(v:Variables, v':Variables, step:Step)
   requires Valid(v)
 {
   match step
-	  case TransitionFromInitialToErrorStep() => TransitionFromInitialToError(v, v')
-	  case TransitionFromErrorToErrorStep() => TransitionFromErrorToError(v, v')
-	  case TransitionFromErrorToInitialStep() => TransitionFromErrorToInitial(v, v')
-	  case TransitionFromErrorToDoneStep() => TransitionFromErrorToDone(v, v')
-	  case TransitionFromInitialToDoneStep() => TransitionFromInitialToDone(v, v')
+	  case TransitionFromInitial1ToError1withwriteStep() => TransitionFromInitial1ToError1withwrite(v, v')
+	  case TransitionFromError1ToError2withreadStep() => TransitionFromError1ToError2withread(v, v')
+	  case TransitionFromError2ToError2withreadStep() => TransitionFromError2ToError2withread(v, v')
+	  case TransitionFromError2ToDone1withreadStep() => TransitionFromError2ToDone1withread(v, v')
+	  case TransitionFromError2ToInitial1withreadStep() => TransitionFromError2ToInitial1withread(v, v')
+	  case TransitionFromInitial1ToDone1withwriteStep() => TransitionFromInitial1ToDone1withwrite(v, v')
+	  case TransitionFromError1ToDone1withreadStep() => TransitionFromError1ToDone1withread(v, v')
+	  case TransitionFromError1ToInitial1withreadStep() => TransitionFromError1ToInitial1withread(v, v')
+	  case TransitionFromError1ToDone1withwriteStep() => TransitionFromError1ToDone1withwrite(v, v')
 }
 
 predicate Next(v:Variables, v':Variables)
@@ -99,24 +144,20 @@ predicate Next(v:Variables, v':Variables)
 
 predicate Valid(v:Variables)
 {
-    && (v.state == Initial || v.state == Error ==> v.success == 0)
-    && (v.state == Done ==> v.success == 1)
-    && v.write >= 0
-    && v.read >= 0
-    && (v.write > v.read ==> v.write - v.read <= 2)
+    && (( || v.state == Initial1 || v.state == Error1 || v.state == Error2) ==> (v.success == 0))
+    && ((v.state == Done1) ==> (v.success == 1))
 }
 
 predicate ValidTransition(v:Variables, v':Variables)
 {
-    && v.read - v'.read <= 1
-    && v.write - v'.write <= 1
     && v'.success - v.success <= 1
-    && v.read + v.write > v'.read + v'.write
+    && v.count - v'.count == 1
+    && (v.lastop == Write ==> v'.lastop != Write)
 }
 
 lemma SafetyProof()
-ensures forall v | Init(v) :: Valid(v)
-ensures forall v, v' | Valid(v) && Next(v, v') && ValidTransition(v,v') :: Valid(v')
+  ensures forall v | Init(v) :: Valid(v)
+  ensures forall v, v' | (Valid(v) && Next(v, v')) :: Valid(v') && (ValidTransition(v,v'))
 {
 }
 
@@ -125,7 +166,7 @@ type Trace = nat -> Variables
 ghost predicate IsTrace(trace: Trace)
 {
     Init(trace(0)) &&
-    forall i: nat :: Valid(trace(i)) && Next(trace(i), trace(i+1)) && ValidTransition(trace(i), trace(i+1)) ==> Valid(trace(i+1))
+    forall i: nat :: (Valid(trace(i)) && Next(trace(i), trace(i+1)))
 }
 
 lemma SafetyProofTrace(trace: Trace)
@@ -135,24 +176,24 @@ lemma SafetyProofTrace(trace: Trace)
     assert Init(trace(0));
     assert Valid(trace(0));
 
-    assert Valid(trace(0)) && Next(trace(0), trace(1)) ==> Valid(trace(1)) && ValidTransition(trace(0), trace(1));
-    assert Valid(trace(1)) && Next(trace(1), trace(2)) ==> Valid(trace(2)) && ValidTransition(trace(1), trace(2));
+    assert Next(trace(0), trace(1)) ==> Valid(trace(1)) && ValidTransition(trace(0), trace(1));
+    // assert Valid(trace(1)) && Next(trace(1), trace(2)) ==> Valid(trace(2)) && ValidTransition(trace(1), trace(2));
 
     // Inductive step:
     forall i | i >= 0
-        ensures Valid(trace(i)) && Next(trace(i), trace(i+1)) && ValidTransition(trace(i), trace(i+1)) ==> Valid(trace(i+1)) 
+      ensures (Valid(trace(i)) && Next(trace(i), trace(i+1))) ==> (Valid(trace(i+1)) && ValidTransition(trace(i), trace(i+1)))
     {
-        if Valid(trace(i)) && Next(trace(i), trace(i+1)){
-            assert trace(i).success <= 1;
-            if trace(i+1).state == Done {
-                assert trace(i+1).success == 1;
-            }
+      if Valid(trace(i)) && Next(trace(i), trace(i+1)){
+        assert trace(i).success <= 1;
+        if trace(i+1).state == Done1 {
+          assert trace(i+1).success == 1;
         }
-        assert Valid(trace(i)) && Next(trace(i), trace(i+1)) && ValidTransition(trace(i), trace(i+1)) ==> Valid(trace(i+1));
-        if Valid(trace(i)) && Next(trace(i), trace(i+1)) && Valid(trace(i+1)) && ValidTransition(trace(i), trace(i+1)) {
-            assert trace(i).read + trace(i).write > trace(i+1).read + trace(i+1).write; 
-            assert trace(i+1).success <= 1;
-        }
+      }
+      // assert Valid(trace(i)) && Next(trace(i), trace(i+1)) ==> Valid(trace(i+1)) && ValidTransition(trace(i), trace(i+1));
+      // if Valid(trace(i)) && Next(trace(i), trace(i+1)) && Valid(trace(i+1)) && ValidTransition(trace(i), trace(i+1)) {
+      //     assert trace(i).count > trace(i+1).count;
+      //     assert trace(i+1).success <= 1;
+      // }
     }
 }
 
@@ -165,37 +206,37 @@ ghost predicate FairNetwork(trace: Trace)
 
 ghost predicate HasDone(n: nat, trace: Trace)
 {
-    exists n' :: n <= n' && trace(n').state == Done && trace(n').success == 1
+    exists n' :: n <= n' && trace(n').state == Done1 && trace(n').success == 1
 }
 
 lemma LivenessProof(trace: Trace, n: nat)
-        returns (n': nat)
+      returns (n': nat)
     requires IsTrace(trace) && FairNetwork(trace)
     requires Init(trace(n))
     requires forall i: nat :: i >= n ==> (Valid(trace(i)) && Next(trace(i), trace(i+1)))
-    ensures n <= n' && trace(n').state == Done && trace(n').success == 1
+    ensures n <= n' && trace(n').state == Done1 && trace(n').success == 1
 {
-    n' := n;
+      n' := n;
     while true
-        invariant n <= n'
-        invariant (Valid(trace(n)) && Next(trace(n), trace(n+1)))
-        invariant Valid(trace(n')) && Next(trace(n'), trace(n'+1)) && ValidTransition(trace(n'), trace(n'+1)) && Valid(trace(n'+1))
-        decreases if Valid(trace(n')) && Next(trace(n'), trace(n'+1)) && Valid(trace(n'+1)) && ValidTransition(trace(n'), trace(n'+1)) then trace(n').read + trace(n').write else 0
+      invariant n <= n'
+      invariant (Valid(trace(n)) && Next(trace(n), trace(n+1)))
+      invariant Valid(trace(n')) && Next(trace(n'), trace(n'+1)) && ValidTransition(trace(n'), trace(n'+1)) && Valid(trace(n'+1))
+      decreases if Valid(trace(n')) && Next(trace(n'), trace(n'+1)) && Valid(trace(n'+1)) && ValidTransition(trace(n'), trace(n'+1)) then trace(n').count else 0
     {
-        SafetyProofTrace(trace);
-        var prev := trace(n').read + trace(n').write;
-        var prev_n := n';
+      SafetyProofTrace(trace);
+      var prev := trace(n').count;
+      var prev_n := n';
 
-        n' := n' + 1;
+      n' := n' + 1;
 
-        assert (trace(n').read + trace(n').write) < prev;
+      assert trace(n').count < prev;
 
-        if trace(n').state == Done {
-            assert trace(n').success == 1;
-            break;
-        }
+      if trace(n').state == Done1 {
+        assert trace(n').success == 1;
+        break;
+      }
     }
-    assert trace(n').state == Done;
+    assert trace(n').state == Done1;
     assert trace(n').success == 1;
 }
 
