@@ -407,15 +407,29 @@ module RDL::Typecheck
         @num_casts = 0
         g = RDL::Graph.new
         _, body_type, body_eff = tc(scope, Env.new(targs_dup), body, g)
-        cur_bbl = g.peek_stack
-        begin_main_bbl = g.get_stack_node(RDL::Graph::EXPR_TYPE[:begin_main])
-        done_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:done])
-        g.add_node(done_bbl)
-        g.push_to_stack(done_bbl)
-        g.add_edge(cur_bbl, done_bbl)
-        g.add_edge(begin_main_bbl, done_bbl)
-        puts g.to_s
-        g.to_dafny
+        
+        if g.verify?
+          cur_bbl = g.peek_stack
+          if g.get_monotonic_pop_nodes.size > 0
+            cur_bbl = g.get_monotonic_pop_nodes[0]
+            if cur_bbl.get_expr_type == RDL::Graph::EXPR_TYPE[:retry]
+              cur_bbl = nil
+            end
+          end
+          begin_main_bbl = g.get_stack_node(RDL::Graph::EXPR_TYPE[:begin_main])
+          begin_main_bbl = g.get_graph_node(RDL::Graph::EXPR_TYPE[:begin_main]) if begin_main_bbl.nil?
+          count = g.get_count(RDL::Graph::EXPR_TYPE[:done])
+          done_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:done], count)
+          g.add_node(done_bbl)
+          g.push_to_stack(done_bbl)
+          g.add_edge(cur_bbl, done_bbl) if cur_bbl
+          g.add_edge(begin_main_bbl, done_bbl)
+          puts g.to_s
+
+          g.to_dafny
+          # if verification fails, mention which meth and name of the method
+          g.set_verify(false)
+        end
       end
       # puts body_eff.inspect
       # puts ast
@@ -712,13 +726,13 @@ module RDL::Typecheck
       e.children.each { |p|
         # each child is a pair
         if p.type == :pair
-          envi, tleft = tc(scope, envi, p.children[0])
+          envi, tleft = tc(scope, envi, p.children[0], g)
           tlefts << tleft
-          envi, tright = tc(scope, envi, p.children[1])
+          envi, tright = tc(scope, envi, p.children[1], g)
           trights << tright
           is_fh = false unless tleft.is_a?(RDL::Type::SingletonType)
         elsif p.type == :kwsplat
-          envi, tkwsplat = tc(scope, envi, p.children[0])
+          envi, tkwsplat = tc(scope, envi, p.children[0], g)
 
           if tkwsplat.is_a? RDL::Type::FiniteHashType
             tkwsplat.cant_promote! # must remain finite hash
@@ -1113,14 +1127,19 @@ RUBY
     #   end
     when :if
       effs = [RDL::Globals.types[:pure]]
-      # puts "Node if: #{e.children[0].type}"
-      # puts "Node if then: #{e.children[1].type}"
+      # puts "Node if: #{e.children[0]}"
+      # puts "Node if then: #{e.children[1]}"
       envi, tguard, eff_guard = tc(scope, env, e.children[0], g) # guard; any type allowed
       effs.push(*eff_guard)
+
+      # puts " Eff guard: #{eff_guard}"
  
       cur_bbl = g.peek_stack
+      # puts "\n---Stack--- if" 
+      # puts g.get_stack
       # puts "Current basic block (if): #{cur_bbl}"
-      if_head = RDL::Graph::BasicBlock.new(eff_guard, RDL::Graph::EXPR_TYPE[:if_head])
+      count = g.get_count(RDL::Graph::EXPR_TYPE[:if_head])
+      if_head = RDL::Graph::BasicBlock.new(eff_guard.dup, RDL::Graph::EXPR_TYPE[:if_head], count)
       g.add_node(if_head)
       g.add_edge(cur_bbl, if_head)
       g.push_to_stack(if_head)
@@ -1128,25 +1147,35 @@ RUBY
       if_then_retry = false
       if_else_retry = false
       if !e.children[1].nil?
-        if_then = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:if_then])
+        count = g.get_count(RDL::Graph::EXPR_TYPE[:if_then])
+        if_then = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:if_then], count)
         g.add_node(if_then)
         g.add_edge(if_head, if_then)
         g.push_to_stack(if_then)
       end
       envleft, tleft, eff_left = if e.children[1].nil? then [envi, RDL::Globals.types[:nil], RDL::Type::UnionType.new(*effs).canonical] else tc(scope, envi, e.children[1], g) end # then
       effs.push(*eff_left)
+
+      # puts "\n---Stack--- after if_then" 
+      # puts g.get_stack
+    
       if !e.children[1].nil? 
         if_then = g.get_stack_node(RDL::Graph::EXPR_TYPE[:if_then])
         if_then.add_effect(eff_left)
         node = g.pop_from_stack
-        if node.get_expr_type == RDL::Graph::EXPR_TYPE[:retry]
-          g.pop_from_stack
-          if_then_retry = true
+        if g.get_monotonic_pop_nodes.size > 0
+          cur_bbl = g.get_monotonic_pop_nodes[0]
+          if_then_retry = true if cur_bbl.get_expr_type == RDL::Graph::EXPR_TYPE[:retry]
+          g.remove_first_monotonic_pop_node if if_then_retry
         end
       end
+      last_if_then_bbl = g.get_monotonic_pop_nodes[0] if g.get_monotonic_pop_nodes.size > 0
+      # puts "\nLast if then bbl:"
+      # puts last_if_then_bbl
 
       if !e.children[2].nil?
-        if_else = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:if_else])
+        count = g.get_count(RDL::Graph::EXPR_TYPE[:if_else])
+        if_else = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:if_else], count)
         g.add_node(if_else)
         g.add_edge(if_head, if_else)
         g.push_to_stack(if_else)
@@ -1154,50 +1183,68 @@ RUBY
 
       envright, tright, eff_right = if e.children[2].nil? then [envi, RDL::Globals.types[:nil], RDL::Type::UnionType.new(*effs).canonical] else tc(scope, envi, e.children[2], g) end # else
       effs.push(*eff_right)
+     
+      # puts "\n---Stack--- after if_else" 
+      # puts g.get_stack
+
       if !e.children[2].nil? 
         if_else = g.get_stack_node(RDL::Graph::EXPR_TYPE[:if_else])
         if_else.add_effect(eff_right)
         node = g.pop_from_stack
-        if node.get_expr_type == RDL::Graph::EXPR_TYPE[:retry]
-          g.pop_from_stack
-          if_else_retry = true
+        if g.get_monotonic_pop_nodes.size > 0
+          cur_bbl = g.get_monotonic_pop_nodes[0]
+          if_else_retry = true if cur_bbl.get_expr_type == RDL::Graph::EXPR_TYPE[:retry]
+          g.remove_first_monotonic_pop_node if if_else_retry
         end
       end
+
+      last_if_else_bbl = g.get_monotonic_pop_nodes[0] if g.get_monotonic_pop_nodes.size > 0
+      # puts "\nLast if else bbl:"
+      # puts last_if_else_bbl
       
-      g.pop_from_stack # not sure if this is necessary
+      g.pop_from_stack
 
-      join = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:join])
+      count = g.get_count(RDL::Graph::EXPR_TYPE[:join])
+      join = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:join], count)
 
+      # case 1: both then and else are present and no retry in either
       if !e.children[1].nil? && !e.children[2].nil? && !if_then_retry && !if_else_retry
         g.add_node(join)
-        g.join_nodes(if_then, if_else, join)
-        join.add_effect(effs)
+        g.join_nodes(last_if_then_bbl, last_if_else_bbl, join)
+        # join.add_effect(effs) 
+      # case 2: then is present and no retry in then
       elsif !e.children[1].nil? && !if_then_retry
         g.add_node(join)
+        # case 2.1: else is present and retry in else
         if !e.children[2].nil?
-          g.add_edge(if_then, join)
-          join.add_effect(eff_left)
+          g.add_edge(last_if_then_bbl, join)
+          # join.add_effect(eff_left)
           g.push_to_stack(join)
+        # case 2.2: else is not present
         else
-          g.join_nodes(if_then, if_head, join)
-          join.add_effect(eff_left)
-          join.add_effect(eff_guard)
+          g.join_nodes(last_if_then_bbl, if_head, join)
+          # join.add_effect(eff_left)
+          # join.add_effect(eff_guard)
         end
+      # case 3: then is present and retry in then
       elsif !e.children[1].nil? && if_then_retry
         g.add_node(join)
         g.add_edge(if_head, join)
-        join.add_effect(eff_guard)
+        # join.add_effect(eff_guard)
         g.push_to_stack(join)
+      # case 4: else is present and no retry in else
       elsif !e.children[2].nil? && !if_else_retry
         g.add_node(join)
+        # case 4.1: then is present and retry in then
         if !e.children[1].nil?
-          g.add_edge(if_else, join)
-          join.add_effect(eff_right)
+          g.add_edge(last_if_else_bbl, join)
+          # join.add_effect(eff_right)
           g.push_to_stack(join)
+        # case 4.2: then is not present
         else
-          g.join_nodes(if_else, if_head, join)
-          join.add_effect(eff_right)
-          join.add_effect(eff_guard)
+          g.join_nodes(last_if_else_bbl, if_head, join)
+          # join.add_effect(eff_right)
+          # join.add_effect(eff_guard)
         end
       end
 
@@ -1406,8 +1453,10 @@ RUBY
           g.add_edge(cur_bbl, begin_bbl)
           # Add a dummy retry node to the stack to indicate that we are retrying
           # Wherever the control flow goes after this will know to not join it to the next node
-          retry_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:retry])
+          count = g.get_count(RDL::Graph::EXPR_TYPE[:retry])
+          retry_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:retry], count)
           g.push_to_stack(retry_bbl)
+          g.pop_from_stack # adds to the monotonic pop nodes
         end
       end
 
@@ -1415,7 +1464,7 @@ RUBY
     when :return
       # TODO return in lambda returns from lambda and not outer scope
       if e.children[0]
-         env1, t1 = tc(scope, env, e.children[0])
+         env1, t1 = tc(scope, env, e.children[0], g)
       else
          env1, t1 = [env, RDL::Globals.types[:nil], [:+, :+]]
       end
@@ -1430,7 +1479,8 @@ RUBY
         cur_bbl = g.peek_stack
         if !cur_bbl.nil?
         # puts "Current basic block (begin_secondary): #{cur_bbl}"
-          begin_secondary_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:begin_secondary])
+          count = g.get_count(RDL::Graph::EXPR_TYPE[:begin_secondary])
+          begin_secondary_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:begin_secondary], count)
           g.add_node(begin_secondary_bbl)
           g.add_edge(cur_bbl, begin_secondary_bbl)
           g.push_to_stack(begin_secondary_bbl)
@@ -1446,6 +1496,8 @@ RUBY
         # puts "Effect: #{eff}"
         effi.push(*eff)
       }
+
+      g.pop_from_stack
 
       [envi, ti, RDL::Type::UnionType.new(*effi).canonical]
     when :ensure
@@ -1470,9 +1522,11 @@ RUBY
         begin
           old_retry = rscope[:retry]
           eff_res = [RDL::Globals.types[:pure]]
+          g.set_verify(true)
           env_body, tbody, eff_body = tc(rscope, rscope[:retry], e.children[0], g)
           if !g.visited_begin_main?
-            begin_main_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:begin_main])
+            count = g.get_count(RDL::Graph::EXPR_TYPE[:begin_main])
+            begin_main_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:begin_main], count)
             begin_main_bbl.add_effect(eff_body)
             g.add_node(begin_main_bbl)
             g.add_to_scope(begin_main_bbl)
@@ -1482,7 +1536,8 @@ RUBY
           else
             cur_bbl = g.peek_stack
             # puts "Current basic block (begin_with_rescue creation before): #{cur_bbl}"
-            begin_with_rescue_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:begin_with_rescue])
+            count = g.get_count(RDL::Graph::EXPR_TYPE[:begin_with_rescue])
+            begin_with_rescue_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:begin_with_rescue], count)
             begin_with_rescue_bbl.add_effect(eff_body)
             g.add_node(begin_with_rescue_bbl)
             g.add_edge(cur_bbl, begin_with_rescue_bbl)
@@ -1491,7 +1546,8 @@ RUBY
           end
 
           cur_bbl = g.peek_stack
-          rescue_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:rescue])
+          count = g.get_count(RDL::Graph::EXPR_TYPE[:rescue])
+          rescue_bbl = RDL::Graph::BasicBlock.new([RDL::Globals.types[:pure]], RDL::Graph::EXPR_TYPE[:rescue], count)
           g.add_node(rescue_bbl)
           g.add_edge(cur_bbl, rescue_bbl)
           eff_res << eff_body
@@ -1514,6 +1570,7 @@ RUBY
           end
         end until old_retry == rscope[:retry]
         # TODO: variables newly bound in *env_res should be unioned with nil
+        g.pop_from_stack
         g.remove_from_scope
         [Env.join(e, *env_res), RDL::Type::UnionType.new(*tres).canonical, RDL::Type::UnionType.new(*eff_res).canonical]
       }
